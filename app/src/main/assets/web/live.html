@@ -107,22 +107,37 @@
     const resText = document.getElementById('resolution');
     let hls = null;
     let retryTimeout = null;
+    let startTimeout = null;
 
     function startStream() {
       if (hls) { hls.destroy(); hls = null; }
+      clearTimeout(startTimeout);
 
       if (Hls.isSupported()) {
         hls = new Hls({
           liveDurationInfinity: true,
           enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 0
+          lowLatencyMode: false,
+          backBufferLength: 0,
+          manifestLoadingTimeOut: 10000,
+          manifestLoadingMaxRetry: 3,
+          levelLoadingTimeOut: 10000,
+          fragLoadingTimeOut: 10000
         });
 
         hls.loadSource('/hls/screen.m3u8');
         hls.attachMedia(video);
 
+        // Timeout: if no playback within 15s, retry
+        startTimeout = setTimeout(() => {
+          if (video.paused || video.readyState < 2) {
+            if (hls) { hls.destroy(); hls = null; }
+            streamOffline();
+          }
+        }, 15000);
+
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          clearTimeout(startTimeout);
           overlay.classList.add('hidden');
           statusDot.classList.add('live');
           liveBadge.style.display = '';
@@ -132,6 +147,7 @@
 
         hls.on(Hls.Events.ERROR, (e, data) => {
           if (data.fatal) {
+            clearTimeout(startTimeout);
             hls.destroy();
             hls = null;
             streamOffline();
