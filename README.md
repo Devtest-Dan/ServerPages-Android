@@ -6,6 +6,9 @@ Unattended screen broadcaster + media server for Android. Turns any phone into a
 
 - **Unattended operation** — auto-starts on boot, runs forever, no UI interaction needed
 - **Live screen capture** — MediaProjection → H.264 → HLS (720p/1080p)
+- **4-digit access code** — viewers must enter a code to watch the stream
+- **Admin monitor** — unauthenticated stream at `/admin` for the device owner
+- **Live viewer counter** — real-time viewer count on the app and admin page
 - **Media browser** — browse DCIM, Pictures, Videos, Music, Downloads
 - **Embedded HTTP server** — NanoHTTPd on port 3333, no external dependencies
 - **Tailscale integration** — auto-launches Tailscale, detects tailnet IP, enables remote access
@@ -42,14 +45,41 @@ That's it. The phone is now streaming.
 
 For public internet access, enable [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) from the admin console for this device.
 
+## Access Code
+
+On each service start, a random **4-digit code** is generated. Viewers must enter this code to access the stream and media browser. The code is shown:
+
+- On the **app UI** — large orange digits under "VIEWER CODE"
+- In the **notification** — `LIVE on http://x.x.x.x:3333 | Code: 1234`
+- On the **admin page** — via the status API
+
+Share this code with people you want to give access. The code changes every time the service restarts.
+
+### Viewer Flow
+
+1. Viewer opens `http://<phone-ip>:3333` in a browser
+2. Redirected to the **login page** — enters the 4-digit code
+3. On success, a session cookie is set and they can access the stream and media
+4. Wrong code shows an error with shake animation, inputs clear for retry
+
+### Admin Monitor
+
+The admin stream at `http://<phone-ip>:3333/admin` requires **no authentication**. Use it to verify the stream is working without needing the access code. The admin stream is **not counted** in the viewer total.
+
+### Viewer Counter
+
+The app shows a live count of how many viewers are currently watching. A viewer is counted when they fetch the HLS manifest (`/hls/screen.m3u8`). Viewers are removed from the count after 30 seconds of inactivity. The admin stream uses a separate path (`/admin/hls/`) and is excluded.
+
 ## Daily Use
 
 **Zero interaction.** The phone streams and serves files 24/7.
 
 Open in any browser:
-- `http://<phone-ip>:3333` — dashboard with stream preview + media browser
-- `http://<phone-ip>:3333/live.html` — full-screen live stream with quality toggle
-- `http://<phone-ip>:3333/media.html` — browse and play phone media files
+- `http://<phone-ip>:3333` — dashboard (requires access code)
+- `http://<phone-ip>:3333/live.html` — full-screen live stream with quality toggle (requires access code)
+- `http://<phone-ip>:3333/media.html` — browse and play phone media files (requires access code)
+- `http://<phone-ip>:3333/admin` — admin stream monitor (no auth, excluded from viewer count)
+- `http://<phone-ip>:3333/login` — login page for viewers
 
 ## After Reboot
 
@@ -65,14 +95,33 @@ This single tap per reboot is the **only human interaction** — Android does no
 
 ## API Routes
 
+### Public (no auth)
+
+| Route | Method | Description |
+|---|---|---|
+| `/login` | GET | Login page (4-digit code entry) |
+| `/style.css` | GET | Stylesheet |
+| `/api/auth` | POST | Authenticate with access code `{"code":"1234"}` |
+
+### Admin (no auth, excluded from viewer count)
+
+| Route | Method | Description |
+|---|---|---|
+| `/admin` | GET | Admin stream monitor page |
+| `/admin/hls/screen.m3u8` | GET | HLS manifest (admin) |
+| `/admin/hls/segNNNNN.mp4` | GET | HLS segments (admin) |
+| `/admin/api/status` | GET | Server status + viewer count |
+
+### Protected (requires access code)
+
 | Route | Method | Description |
 |---|---|---|
 | `/` | GET | Dashboard |
 | `/live.html` | GET | Live HLS stream player |
 | `/media.html` | GET | Media file browser |
-| `/hls/screen.m3u8` | GET | HLS manifest |
+| `/hls/screen.m3u8` | GET | HLS manifest (counts as viewer) |
 | `/hls/segNNNNN.mp4` | GET | HLS segments |
-| `/api/status` | GET | Server status (capturing, uptime, quality) |
+| `/api/status` | GET | Server status (capturing, uptime, quality, viewers) |
 | `/api/files?dir=...` | GET | Directory listing (JSON) |
 | `/api/stream?path=...` | GET | File streaming (Range/206 support) |
 | `/api/download?path=...` | GET | File download |
@@ -83,10 +132,15 @@ This single tap per reboot is the **only human interaction** — Android does no
 ```
 BootReceiver (BOOT_COMPLETED)
 ├── CaptureService (foreground service, runs forever)
+│   ├── Access code (random 4-digit, generated on service start)
 │   ├── WebServer (NanoHTTPd :3333)
+│   │   ├── Auth layer (cookie sessions, 4-digit code validation)
+│   │   ├── Viewer tracking (IP → timestamp, 30s expiry)
+│   │   ├── Public: /login, /api/auth, /style.css
+│   │   ├── Admin: /admin, /admin/hls/*, /admin/api/status
+│   │   ├── Protected: /, /live.html, /media.html, /hls/*, /api/*
 │   │   ├── Static pages (assets/web/)
-│   │   ├── HLS segments (cache/hls/)
-│   │   └── API routes (files, stream, download, status, quality)
+│   │   └── HLS segments (cache/hls/)
 │   ├── ScreenCapture (MediaProjection → VirtualDisplay → MediaCodec → HlsWriter)
 │   │   └── HlsWriter (standalone MP4 segments + m3u8 manifest)
 │   └── Tailscale (auto-detect, auto-launch, IP discovery)
