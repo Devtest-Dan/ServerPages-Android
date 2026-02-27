@@ -122,7 +122,8 @@
           manifestLoadingTimeOut: 10000,
           manifestLoadingMaxRetry: 3,
           levelLoadingTimeOut: 10000,
-          fragLoadingTimeOut: 10000
+          fragLoadingTimeOut: 10000,
+          xhrSetup: function(xhr) { xhr.withCredentials = true; }
         });
 
         hls.loadSource('/hls/screen.m3u8');

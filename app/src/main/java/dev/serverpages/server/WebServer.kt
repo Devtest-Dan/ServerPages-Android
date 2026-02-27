@@ -91,7 +91,15 @@ class WebServer(
                 // ─── Everything else requires auth ───────────────────────
                 else -> {
                     if (!isAuthenticated(session)) {
-                        return redirectToLogin()
+                        // For API/HLS requests return 401 so hls.js handles it as error
+                        // For page requests redirect to login
+                        return if (uri.startsWith("/hls/") || uri.startsWith("/api/")) {
+                            newFixedLengthResponse(
+                                Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized"
+                            )
+                        } else {
+                            redirectToLogin()
+                        }
                     }
 
                     when {
@@ -127,9 +135,18 @@ class WebServer(
     // ─── Auth ─────────────────────────────────────────────────────────────────
 
     private fun isAuthenticated(session: IHTTPSession): Boolean {
-        val cookies = session.cookies ?: return false
-        val token = cookies.read(SESSION_COOKIE) ?: return false
-        return validTokens.contains(token)
+        // Try NanoHTTPd's cookie parser first
+        val cookies = session.cookies
+        val token = cookies?.read(SESSION_COOKIE)
+        if (token != null && validTokens.contains(token)) return true
+
+        // Fallback: parse Cookie header manually (NanoHTTPd can miss cookies)
+        val cookieHeader = session.headers["cookie"] ?: return false
+        val manualToken = cookieHeader.split(";")
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("$SESSION_COOKIE=") }
+            ?.substringAfter("=")
+        return manualToken != null && validTokens.contains(manualToken)
     }
 
     private fun handleAuth(session: IHTTPSession): Response {
@@ -413,7 +430,7 @@ class WebServer(
         val fis = FileInputStream(file)
         val response = newFixedLengthResponse(Response.Status.OK, mimeType, fis, file.length())
         response.addHeader("Cache-Control", cacheControl)
-        response.addHeader("Access-Control-Allow-Origin", "*")
+        response.addHeader("Access-Control-Allow-Credentials", "true")
         return response
     }
 
@@ -434,8 +451,6 @@ class WebServer(
 
     private fun jsonResponse(status: Response.Status, data: Any): Response {
         val json = gson.toJson(data)
-        val response = newFixedLengthResponse(status, "application/json", json)
-        response.addHeader("Access-Control-Allow-Origin", "*")
-        return response
+        return newFixedLengthResponse(status, "application/json", json)
     }
 }

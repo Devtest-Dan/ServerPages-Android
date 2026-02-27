@@ -73,7 +73,8 @@
           enableWorker: true,
           manifestLoadingTimeOut: 10000,
           manifestLoadingMaxRetry: 2,
-          fragLoadingTimeOut: 10000
+          fragLoadingTimeOut: 10000,
+          xhrSetup: function(xhr) { xhr.withCredentials = true; }
         });
         previewHls.loadSource('/hls/screen.m3u8');
         previewHls.attachMedia(video);
