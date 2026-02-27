@@ -180,12 +180,11 @@ class MainActivity : ComponentActivity() {
     private fun getNeededPermissions(): List<String> {
         val perms = mutableListOf<String>()
 
+        // Only need notification permission as a runtime dialog
+        // MANAGE_EXTERNAL_STORAGE is handled separately via settings
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
-            perms.add(Manifest.permission.READ_MEDIA_IMAGES)
-            perms.add(Manifest.permission.READ_MEDIA_VIDEO)
-            perms.add(Manifest.permission.READ_MEDIA_AUDIO)
-        } else {
+        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
             perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
