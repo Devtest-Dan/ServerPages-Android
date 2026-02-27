@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var projectionLauncher: ActivityResultLauncher<Intent>
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
+    private var isInitialSetup = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,8 +62,11 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "MediaProjection denied — server-only mode")
                 startServerOnly()
             }
-            // Go to background — nothing more to do here
-            moveTaskToBack(true)
+            // Only go to background after the initial permission setup
+            if (isInitialSetup) {
+                moveTaskToBack(true)
+                isInitialSetup = false
+            }
         }
 
         // Runtime permission launcher
@@ -117,12 +121,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startAutoFlow() {
-        // If capture is already running, just go to background
+        // If capture is already running, stay visible so user can see the UI
         if (CaptureService.instance?.isCapturing() == true) {
-            Log.i(TAG, "Already capturing — going to background")
-            moveTaskToBack(true)
+            Log.i(TAG, "Already capturing — showing UI")
             return
         }
+
+        // First-time setup — will auto-minimize after permissions
+        isInitialSetup = true
 
         // Check if runtime permissions are needed
         val needed = getNeededPermissions()
