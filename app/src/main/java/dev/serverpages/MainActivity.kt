@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dagger.hilt.android.AndroidEntryPoint
 import dev.serverpages.service.CaptureService
+import dev.serverpages.ui.ContentPlayerActivity
 import dev.serverpages.ui.MainScreen
 import dev.serverpages.ui.MainViewModel
 import kotlinx.coroutines.delay
@@ -96,7 +97,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                MainScreen(state = state)
+                MainScreen(
+                    state = state,
+                    onContentMode = {
+                        startActivity(Intent(this@MainActivity, ContentPlayerActivity::class.java))
+                    }
+                )
             }
         }
 

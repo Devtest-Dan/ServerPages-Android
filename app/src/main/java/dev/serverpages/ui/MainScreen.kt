@@ -25,7 +25,7 @@ private val GreenColor = Color(0xFF66BB6A)
 private val OrangeColor = Color(0xFFFFA726)
 
 @Composable
-fun MainScreen(state: ServiceState) {
+fun MainScreen(state: ServiceState, onContentMode: () -> Unit = {}) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -188,6 +188,34 @@ fun MainScreen(state: ServiceState) {
             }
 
             Spacer(Modifier.height(16.dp))
+
+            // Content Mode button
+            Button(
+                onClick = onContentMode,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AccentColor,
+                    contentColor = Color.Black
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Content Mode",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = "Play media files full-screen for viewers",
+                color = TextMuted,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             Text(
                 text = "For 10+ viewers use computer",

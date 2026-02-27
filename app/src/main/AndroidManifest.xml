@@ -50,6 +50,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.ContentPlayerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ServerPages"
+            android:configChanges="orientation|screenSize"
+            android:screenOrientation="landscape" />
+
         <service
             android:name=".service.CaptureService"
             android:exported="false"
