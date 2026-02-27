@@ -84,8 +84,9 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "All files access denied — media browser will not work")
                 }
             }
-            // Advance to next step
-            advanceSetupStep()
+            // Proceed to capture after storage settings
+            isInitialSetup = true
+            requestMediaProjection()
         }
 
         setContent {
@@ -143,11 +144,6 @@ class MainActivity : ComponentActivity() {
             return SetupStep.NOTIFICATIONS
         }
 
-        // Check storage
-        if (!hasStoragePermission()) {
-            return SetupStep.STORAGE
-        }
-
         // Need screen capture
         return SetupStep.CAPTURE
     }
@@ -176,11 +172,11 @@ class MainActivity : ComponentActivity() {
                 } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
                     permissionLauncher.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE))
                 } else {
-                    // No notification permission needed, advance
                     advanceSetupStep()
                 }
             }
-            SetupStep.STORAGE -> {
+            SetupStep.CAPTURE -> {
+                // Request storage access silently before capture if needed
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
                     try {
                         val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
@@ -192,12 +188,9 @@ class MainActivity : ComponentActivity() {
                         storageAccessLauncher.launch(intent)
                     }
                 } else {
-                    advanceSetupStep()
+                    isInitialSetup = true
+                    requestMediaProjection()
                 }
-            }
-            SetupStep.CAPTURE -> {
-                isInitialSetup = true
-                requestMediaProjection()
             }
             SetupStep.DONE -> {}
         }
@@ -207,8 +200,7 @@ class MainActivity : ComponentActivity() {
         if (!::viewModel.isInitialized) return
         val current = viewModel.state.value.setupStep
         val next = when (current) {
-            SetupStep.NOTIFICATIONS -> if (hasStoragePermission()) SetupStep.CAPTURE else SetupStep.STORAGE
-            SetupStep.STORAGE -> SetupStep.CAPTURE
+            SetupStep.NOTIFICATIONS -> SetupStep.CAPTURE
             SetupStep.CAPTURE -> SetupStep.DONE
             SetupStep.DONE -> SetupStep.DONE
         }

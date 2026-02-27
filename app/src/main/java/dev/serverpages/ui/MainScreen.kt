@@ -48,13 +48,6 @@ private fun SetupScreen(step: SetupStep, onAction: () -> Unit) {
             buttonText = "Light It Up",
             buttonColor = AccentColor
         )
-        SetupStep.STORAGE -> SetupContent(
-            emoji = "\uD83C\uDF0C",
-            title = "Free Your Universe",
-            subtitle = "Open the vault to your photos & videos\nso viewers can explore your world",
-            buttonText = "Open the Vault",
-            buttonColor = PurpleColor
-        )
         SetupStep.CAPTURE -> SetupContent(
             emoji = "\uD83D\uDE80",
             title = "Go Live",
@@ -123,30 +116,29 @@ private fun SetupScreen(step: SetupStep, onAction: () -> Unit) {
         // Step indicator
         val stepNum = when (step) {
             SetupStep.NOTIFICATIONS -> 1
-            SetupStep.STORAGE -> 2
-            SetupStep.CAPTURE -> 3
-            SetupStep.DONE -> 3
+            SetupStep.CAPTURE -> 2
+            SetupStep.DONE -> 2
         }
         Row(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            for (i in 1..3) {
+            for (i in 1..2) {
                 Box(
                     modifier = Modifier
                         .size(if (i == stepNum) 10.dp else 8.dp)
                         .clip(CircleShape)
                         .background(if (i <= stepNum) buttonColor else Color(0xFF333333))
                 )
-                if (i < 3) Spacer(Modifier.width(8.dp))
+                if (i < 2) Spacer(Modifier.width(8.dp))
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
         Text(
-            text = "Step $stepNum of 3",
+            text = "Step $stepNum of 2",
             color = Color(0xFF555555),
             fontSize = 12.sp
         )
