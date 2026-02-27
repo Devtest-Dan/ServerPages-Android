@@ -78,6 +78,7 @@
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
       <span class="viewer-count" id="viewers">0 viewers</span>
+      <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
     </div>
   </div>
 
@@ -166,6 +167,11 @@
         if (typeof data.viewers === 'number') {
           viewersEl.textContent = data.viewers === 1 ? '1 viewer' : `${data.viewers} viewers`;
           viewersEl.style.color = data.viewers > 0 ? '#66bb6a' : '';
+        }
+        const tsEl = document.getElementById('tailscaleInfo');
+        if (data.tailscaleUrl) {
+          tsEl.textContent = 'Tailscale: ' + data.tailscaleUrl;
+          tsEl.style.display = '';
         }
         if (data.streamReady && !hls && !video.src) {
           startStream();

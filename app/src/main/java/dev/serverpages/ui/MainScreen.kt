@@ -186,6 +186,16 @@ fun MainScreen(state: ServiceState) {
                     }
                 }
             }
+
+            Spacer(Modifier.height(16.dp))
+
+            Text(
+                text = "For 10+ viewers use computer",
+                color = OrangeColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center
+            )
         }
 
         if (!state.serverRunning && !state.capturing) {

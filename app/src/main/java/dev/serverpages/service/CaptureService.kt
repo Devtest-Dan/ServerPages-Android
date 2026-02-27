@@ -136,6 +136,7 @@ class CaptureService : LifecycleService() {
         webServer = WebServer(this, hlsDir, PORT).apply {
             getCaptureState = { screenCapture?.isCapturing ?: false }
             getCurrentQuality = { currentQuality.label }
+            getTailscaleUrl = { tailscaleHostname }
             onQualityChange = { label -> changeQuality(label) }
             this.accessCode = this@CaptureService.accessCode
         }
@@ -166,7 +167,7 @@ class CaptureService : LifecycleService() {
         screenCapture!!.start(resultCode, data, currentQuality, serviceScope)
 
         val ip = getLocalIpAddress()
-        updateNotification("LIVE on http://$ip:$PORT | Code: $accessCode")
+        updateNotification(buildLiveNotificationText())
     }
 
     private fun stopCapture() {
@@ -187,6 +188,14 @@ class CaptureService : LifecycleService() {
         }
 
         return true
+    }
+
+    private fun buildLiveNotificationText(): String {
+        val ip = getLocalIpAddress()
+        val base = "LIVE on http://$ip:$PORT | Code: $accessCode"
+        return if (tailscaleHostname.isNotEmpty()) {
+            "$base\nTailscale: $tailscaleHostname"
+        } else base
     }
 
     fun isCapturing(): Boolean = screenCapture?.isCapturing ?: false
@@ -246,6 +255,10 @@ class CaptureService : LifecycleService() {
                         if (tsIp.startsWith("100.")) {
                             tailscaleHostname = "http://$tsIp:$PORT"
                             Log.i(TAG, "Tailscale detected: $tailscaleHostname")
+                            // Update notification with Tailscale URL
+                            if (screenCapture?.isCapturing == true) {
+                                updateNotification(buildLiveNotificationText())
+                            }
                             return
                         }
                     }

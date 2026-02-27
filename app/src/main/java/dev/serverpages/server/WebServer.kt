@@ -36,6 +36,7 @@ class WebServer(
     var onQualityChange: ((String) -> Boolean)? = null
     var getCaptureState: (() -> Boolean)? = null
     var getCurrentQuality: (() -> String)? = null
+    var getTailscaleUrl: (() -> String)? = null
 
     // Auth
     var accessCode: String = "0000"
@@ -172,13 +173,16 @@ class WebServer(
         val uptimeSec = (System.currentTimeMillis() - startTimeMs) / 1000.0
         val manifestExists = File(hlsDir, "screen.m3u8").exists()
 
+        val tailscale = getTailscaleUrl?.invoke() ?: ""
+
         return jsonResponse(
             Response.Status.OK, mapOf(
                 "capturing" to capturing,
                 "uptime" to uptimeSec,
                 "streamReady" to (capturing && manifestExists),
                 "quality" to quality,
-                "viewers" to getViewerCount()
+                "viewers" to getViewerCount(),
+                "tailscaleUrl" to tailscale
             )
         )
     }
