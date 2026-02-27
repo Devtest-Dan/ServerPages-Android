@@ -25,21 +25,8 @@ import dev.serverpages.service.CaptureService
 import dev.serverpages.ui.ContentPlayerActivity
 import dev.serverpages.ui.MainScreen
 import dev.serverpages.ui.MainViewModel
+import dev.serverpages.ui.SetupStep
 import kotlinx.coroutines.delay
-
-/**
- * Minimal activity — exists only as a permission gateway.
- *
- * Flow:
- * 1. Request runtime permissions (storage, notifications) if needed
- * 2. Immediately request MediaProjection permission
- * 3. Start CaptureService with full capture
- * 4. Move to background (finish activity)
- *
- * The activity is only visible for the permission dialogs.
- * On subsequent launches (e.g., from notification tap), it re-requests
- * MediaProjection if capture isn't running, then goes to background again.
- */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
@@ -51,6 +38,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var storageAccessLauncher: ActivityResultLauncher<Intent>
     private var isInitialSetup = false
+    private lateinit var viewModel: MainViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,7 +61,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Runtime permission launcher
+        // Runtime permission launcher (notifications step)
         permissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { results ->
@@ -81,8 +69,8 @@ class MainActivity : ComponentActivity() {
             if (denied.isNotEmpty()) {
                 Log.w(TAG, "Permissions denied: $denied")
             }
-            // After runtime permissions, check for all-files access
-            checkAllFilesAccess()
+            // Advance to next step
+            advanceSetupStep()
         }
 
         // Storage access settings launcher (MANAGE_EXTERNAL_STORAGE)
@@ -96,7 +84,8 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "All files access denied — media browser will not work")
                 }
             }
-            requestMediaProjection()
+            // Advance to next step
+            advanceSetupStep()
         }
 
         setContent {
@@ -111,8 +100,11 @@ class MainActivity : ComponentActivity() {
             ) {
                 val viewModel: MainViewModel = viewModel()
                 val state by viewModel.state.collectAsState()
+                this@MainActivity.viewModel = viewModel
 
                 LaunchedEffect(Unit) {
+                    // Determine initial setup step
+                    viewModel.setSetupStep(getInitialSetupStep())
                     while (true) {
                         viewModel.refreshState()
                         delay(1000)
@@ -123,74 +115,105 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onContentMode = {
                         startActivity(Intent(this@MainActivity, ContentPlayerActivity::class.java))
+                    },
+                    onSetupAction = {
+                        handleSetupAction(state.setupStep)
                     }
                 )
             }
         }
-
-        // Auto-start: check what's needed
-        startAutoFlow()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Tapped notification — re-request capture if not running
-        startAutoFlow()
+        // Tapped notification — re-check setup state
+        if (::viewModel.isInitialized) {
+            viewModel.setSetupStep(getInitialSetupStep())
+        }
     }
 
-    private fun startAutoFlow() {
-        // If capture is already running, stay visible so user can see the UI
+    private fun getInitialSetupStep(): SetupStep {
+        // If already capturing, skip setup entirely
         if (CaptureService.instance?.isCapturing() == true) {
-            Log.i(TAG, "Already capturing — showing UI")
-            return
+            return SetupStep.DONE
         }
 
-        // First-time setup — will auto-minimize after permissions
-        isInitialSetup = true
+        // Check notifications
+        if (!hasNotificationPermission()) {
+            return SetupStep.NOTIFICATIONS
+        }
 
-        // Check if runtime permissions are needed
-        val needed = getNeededPermissions()
-        if (needed.isNotEmpty()) {
-            Log.i(TAG, "Requesting permissions: $needed")
-            permissionLauncher.launch(needed.toTypedArray())
+        // Check storage
+        if (!hasStoragePermission()) {
+            return SetupStep.STORAGE
+        }
+
+        // Need screen capture
+        return SetupStep.CAPTURE
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         } else {
-            // Runtime permissions granted — check all-files access
-            checkAllFilesAccess()
+            true // Not needed below Android 13
         }
     }
 
-    private fun checkAllFilesAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            Log.i(TAG, "Requesting MANAGE_EXTERNAL_STORAGE")
-            try {
-                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                    data = Uri.parse("package:$packageName")
+    private fun hasStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun handleSetupAction(step: SetupStep) {
+        when (step) {
+            SetupStep.NOTIFICATIONS -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE))
+                } else {
+                    // No notification permission needed, advance
+                    advanceSetupStep()
                 }
-                storageAccessLauncher.launch(intent)
-            } catch (_: Exception) {
-                // Fallback for devices that don't support per-app intent
-                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                storageAccessLauncher.launch(intent)
             }
-        } else {
-            requestMediaProjection()
+            SetupStep.STORAGE -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                    try {
+                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        storageAccessLauncher.launch(intent)
+                    } catch (_: Exception) {
+                        val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                        storageAccessLauncher.launch(intent)
+                    }
+                } else {
+                    advanceSetupStep()
+                }
+            }
+            SetupStep.CAPTURE -> {
+                isInitialSetup = true
+                requestMediaProjection()
+            }
+            SetupStep.DONE -> {}
         }
     }
 
-    private fun getNeededPermissions(): List<String> {
-        val perms = mutableListOf<String>()
-
-        // Only need notification permission as a runtime dialog
-        // MANAGE_EXTERNAL_STORAGE is handled separately via settings
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms.add(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+    private fun advanceSetupStep() {
+        if (!::viewModel.isInitialized) return
+        val current = viewModel.state.value.setupStep
+        val next = when (current) {
+            SetupStep.NOTIFICATIONS -> if (hasStoragePermission()) SetupStep.CAPTURE else SetupStep.STORAGE
+            SetupStep.STORAGE -> SetupStep.CAPTURE
+            SetupStep.CAPTURE -> SetupStep.DONE
+            SetupStep.DONE -> SetupStep.DONE
         }
-
-        return perms.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
+        Log.i(TAG, "Setup: $current → $next")
+        viewModel.setSetupStep(next)
     }
 
     private fun requestMediaProjection() {

@@ -23,9 +23,146 @@ private val AccentColor = Color(0xFF4FC3F7)
 private val DangerColor = Color(0xFFEF5350)
 private val GreenColor = Color(0xFF66BB6A)
 private val OrangeColor = Color(0xFFFFA726)
+private val PurpleColor = Color(0xFFCE93D8)
 
 @Composable
-fun MainScreen(state: ServiceState, onContentMode: () -> Unit = {}) {
+fun MainScreen(
+    state: ServiceState,
+    onContentMode: () -> Unit = {},
+    onSetupAction: () -> Unit = {}
+) {
+    if (state.setupStep != SetupStep.DONE && !state.serverRunning) {
+        SetupScreen(step = state.setupStep, onAction = onSetupAction)
+    } else {
+        LiveScreen(state = state, onContentMode = onContentMode)
+    }
+}
+
+@Composable
+private fun SetupScreen(step: SetupStep, onAction: () -> Unit) {
+    val (emoji, title, subtitle, buttonText, buttonColor) = when (step) {
+        SetupStep.NOTIFICATIONS -> SetupContent(
+            emoji = "\uD83D\uDD14",
+            title = "Unlock the Signal",
+            subtitle = "Let us whisper sweet notifications\nso you never miss a beat",
+            buttonText = "Light It Up",
+            buttonColor = AccentColor
+        )
+        SetupStep.STORAGE -> SetupContent(
+            emoji = "\uD83C\uDF0C",
+            title = "Free Your Universe",
+            subtitle = "Open the vault to your photos & videos\nso viewers can explore your world",
+            buttonText = "Open the Vault",
+            buttonColor = PurpleColor
+        )
+        SetupStep.CAPTURE -> SetupContent(
+            emoji = "\uD83D\uDE80",
+            title = "Go Live",
+            subtitle = "One last thing — let us capture\nyour screen and beam it everywhere",
+            buttonText = "Launch It",
+            buttonColor = GreenColor
+        )
+        SetupStep.DONE -> return
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgColor)
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = emoji,
+            fontSize = 72.sp
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        Text(
+            text = title,
+            color = TextColor,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            text = subtitle,
+            color = TextMuted,
+            fontSize = 15.sp,
+            textAlign = TextAlign.Center,
+            lineHeight = 22.sp
+        )
+
+        Spacer(Modifier.height(40.dp))
+
+        Button(
+            onClick = onAction,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = buttonColor,
+                contentColor = Color.Black
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Text(
+                text = buttonText,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Step indicator
+        val stepNum = when (step) {
+            SetupStep.NOTIFICATIONS -> 1
+            SetupStep.STORAGE -> 2
+            SetupStep.CAPTURE -> 3
+            SetupStep.DONE -> 3
+        }
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            for (i in 1..3) {
+                Box(
+                    modifier = Modifier
+                        .size(if (i == stepNum) 10.dp else 8.dp)
+                        .clip(CircleShape)
+                        .background(if (i <= stepNum) buttonColor else Color(0xFF333333))
+                )
+                if (i < 3) Spacer(Modifier.width(8.dp))
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            text = "Step $stepNum of 3",
+            color = Color(0xFF555555),
+            fontSize = 12.sp
+        )
+    }
+}
+
+private data class SetupContent(
+    val emoji: String,
+    val title: String,
+    val subtitle: String,
+    val buttonText: String,
+    val buttonColor: Color
+)
+
+@Composable
+private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
