@@ -29,11 +29,13 @@ Or copy APK to phone and open it.
 
 ### 2. First Launch
 
-Open the app. It will:
-1. Request permissions (storage, notifications) — tap **Allow**
-2. Request screen capture — tap **Start now**
-3. Start the HTTP server + screen capture
-4. Disappear to background automatically
+Open the app. A 3-step setup wizard guides you through permissions with themed screens:
+
+1. **"Unlock the Signal"** — tap **Light It Up** to allow notifications
+2. **"Free Your Universe"** — tap **Open the Vault** to grant file access
+3. **"Go Live"** — tap **Launch It** to start screen capture
+
+Each step shows a progress indicator (dots + "Step X of 3"). Steps already granted are automatically skipped. Once all 3 are done, the live status screen appears and the server starts.
 
 That's it. The phone is now streaming.
 
@@ -189,7 +191,7 @@ BootReceiver (BOOT_COMPLETED)
 | `WAKE_LOCK` | Prevent CPU sleep |
 | `RECEIVE_BOOT_COMPLETED` | Auto-start on boot |
 | `POST_NOTIFICATIONS` | Foreground service notification |
-| `READ_MEDIA_*` / `READ_EXTERNAL_STORAGE` | Media file browser |
+| `MANAGE_EXTERNAL_STORAGE` | Media file browser (direct filesystem access) |
 
 ## Requirements
 
