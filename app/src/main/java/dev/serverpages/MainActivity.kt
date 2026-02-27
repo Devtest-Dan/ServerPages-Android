@@ -7,7 +7,6 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -24,6 +23,19 @@ import dev.serverpages.ui.MainScreen
 import dev.serverpages.ui.MainViewModel
 import kotlinx.coroutines.delay
 
+/**
+ * Minimal activity — exists only as a permission gateway.
+ *
+ * Flow:
+ * 1. Request runtime permissions (storage, notifications) if needed
+ * 2. Immediately request MediaProjection permission
+ * 3. Start CaptureService with full capture
+ * 4. Move to background (finish activity)
+ *
+ * The activity is only visible for the permission dialogs.
+ * On subsequent launches (e.g., from notification tap), it re-requests
+ * MediaProjection if capture isn't running, then goes to background again.
+ */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
@@ -33,7 +45,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var projectionLauncher: ActivityResultLauncher<Intent>
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
-    private var pendingCaptureAfterPermissions = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,30 +54,27 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == RESULT_OK && result.data != null) {
-                Log.i(TAG, "MediaProjection permission granted")
+                Log.i(TAG, "MediaProjection granted — starting capture")
                 startCaptureService(result.resultCode, result.data!!)
             } else {
-                Log.w(TAG, "MediaProjection permission denied")
-                Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
+                Log.w(TAG, "MediaProjection denied — server-only mode")
+                startServerOnly()
             }
+            // Go to background — nothing more to do here
+            moveTaskToBack(true)
         }
 
         // Runtime permission launcher
         permissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { results ->
-            val allGranted = results.values.all { it }
-            if (!allGranted) {
-                Log.w(TAG, "Some permissions denied: ${results.filter { !it.value }.keys}")
+            val denied = results.filter { !it.value }.keys
+            if (denied.isNotEmpty()) {
+                Log.w(TAG, "Permissions denied: $denied")
             }
-            if (pendingCaptureAfterPermissions) {
-                pendingCaptureAfterPermissions = false
-                requestMediaProjection()
-            }
+            // Permissions done — now request MediaProjection
+            requestMediaProjection()
         }
-
-        // Request runtime permissions on first launch
-        requestRuntimePermissions()
 
         setContent {
             MaterialTheme(
@@ -81,7 +89,6 @@ class MainActivity : ComponentActivity() {
                 val viewModel: MainViewModel = viewModel()
                 val state by viewModel.state.collectAsState()
 
-                // Poll service state
                 LaunchedEffect(Unit) {
                     while (true) {
                         viewModel.refreshState()
@@ -89,17 +96,40 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                MainScreen(
-                    state = state,
-                    onStartServer = { startServerOnly() },
-                    onStartCapture = { requestMediaProjection() },
-                    onStop = { stopService() }
-                )
+                MainScreen(state = state)
             }
+        }
+
+        // Auto-start: check what's needed
+        startAutoFlow()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Tapped notification — re-request capture if not running
+        startAutoFlow()
+    }
+
+    private fun startAutoFlow() {
+        // If capture is already running, just go to background
+        if (CaptureService.instance?.isCapturing() == true) {
+            Log.i(TAG, "Already capturing — going to background")
+            moveTaskToBack(true)
+            return
+        }
+
+        // Check if runtime permissions are needed
+        val needed = getNeededPermissions()
+        if (needed.isNotEmpty()) {
+            Log.i(TAG, "Requesting permissions: $needed")
+            permissionLauncher.launch(needed.toTypedArray())
+        } else {
+            // Permissions already granted — go straight to MediaProjection
+            requestMediaProjection()
         }
     }
 
-    private fun requestRuntimePermissions() {
+    private fun getNeededPermissions(): List<String> {
         val perms = mutableListOf<String>()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -111,12 +141,8 @@ class MainActivity : ComponentActivity() {
             perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
-        val needed = perms.filter {
+        return perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (needed.isNotEmpty()) {
-            permissionLauncher.launch(needed.toTypedArray())
         }
     }
 
@@ -140,12 +166,5 @@ class MainActivity : ComponentActivity() {
             putExtra(CaptureService.EXTRA_QUALITY, "720p")
         }
         startForegroundService(intent)
-    }
-
-    private fun stopService() {
-        val intent = Intent(this, CaptureService::class.java).apply {
-            action = CaptureService.ACTION_STOP
-        }
-        startService(intent)
     }
 }

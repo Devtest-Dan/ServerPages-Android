@@ -11,7 +11,8 @@ data class ServiceState(
     val serverRunning: Boolean = false,
     val capturing: Boolean = false,
     val quality: String = "720p",
-    val serverUrl: String = ""
+    val serverUrl: String = "",
+    val tailscaleUrl: String = ""
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -26,7 +27,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 serverRunning = service.isServerRunning(),
                 capturing = service.isCapturing(),
                 quality = service.getQualityLabel(),
-                serverUrl = service.getServerUrl()
+                serverUrl = service.getServerUrl(),
+                tailscaleUrl = service.getTailscaleUrl()
             )
         } else {
             ServiceState()

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
@@ -21,12 +22,10 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 
 /**
- * Foreground service that runs:
- * 1. Screen capture (MediaProjection → MediaCodec → HLS segments)
- * 2. HTTP server (NanoHTTPd on port 3333)
- *
- * The HTTP server starts immediately (media browsing works without capture).
- * Screen capture requires a MediaProjection token passed via intent extras.
+ * Foreground service — runs everything unattended:
+ * 1. HTTP server (NanoHTTPd on port 3333) — starts immediately
+ * 2. Screen capture (MediaProjection → MediaCodec → HLS) — starts when token provided
+ * 3. Tailscale — auto-launches if installed
  */
 class CaptureService : LifecycleService() {
 
@@ -43,6 +42,8 @@ class CaptureService : LifecycleService() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_QUALITY = "quality"
 
+        private const val TAILSCALE_PACKAGE = "com.tailscale.ipn"
+
         @Volatile
         var instance: CaptureService? = null
             private set
@@ -53,6 +54,7 @@ class CaptureService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
+    private var tailscaleHostname: String = ""
 
     private val hlsDir: File by lazy {
         File(cacheDir, "hls").apply { mkdirs() }
@@ -70,9 +72,13 @@ class CaptureService : LifecycleService() {
 
         when (intent?.action) {
             ACTION_START_SERVER -> {
-                startForeground(NOTIFICATION_ID, buildNotification("Media server running"))
+                startForeground(NOTIFICATION_ID, buildNotification("Starting server..."))
                 acquireWakeLock()
                 startWebServer()
+                launchTailscale()
+                // Show notification that prompts user to tap for capture
+                val ip = getLocalIpAddress()
+                updateNotification("Server on http://$ip:$PORT — tap to enable capture")
             }
 
             ACTION_START_CAPTURE -> {
@@ -87,6 +93,7 @@ class CaptureService : LifecycleService() {
                     acquireWakeLock()
                     startWebServer()
                     startCapture(resultCode, resultData)
+                    launchTailscale()
                 } else {
                     Log.e(TAG, "Missing MediaProjection result data")
                 }
@@ -134,7 +141,6 @@ class CaptureService : LifecycleService() {
             webServer!!.start()
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
-            updateNotification("Serving on http://$ip:$PORT")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start HTTP server", e)
         }
@@ -171,11 +177,9 @@ class CaptureService : LifecycleService() {
         currentQuality = preset
 
         if (screenCapture?.isCapturing == true) {
-            // Need MediaProjection token to restart — can't restart capture without it
-            // Stop capture, user needs to re-grant permission
             stopCapture()
             val ip = getLocalIpAddress()
-            updateNotification("Quality changed to ${preset.label} — tap to re-enable capture")
+            updateNotification("Quality → ${preset.label} — tap to re-enable capture")
             return true
         }
 
@@ -186,6 +190,66 @@ class CaptureService : LifecycleService() {
     fun isServerRunning(): Boolean = webServer != null
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
+    fun getTailscaleUrl(): String = tailscaleHostname
+
+    // ─── Tailscale ───────────────────────────────────────────────────────────
+
+    private fun launchTailscale() {
+        if (!isTailscaleInstalled()) {
+            Log.i(TAG, "Tailscale not installed — skipping")
+            return
+        }
+
+        // Launch Tailscale app to ensure VPN is connected
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(TAILSCALE_PACKAGE)
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(launchIntent)
+                Log.i(TAG, "Tailscale app launched")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to launch Tailscale", e)
+        }
+
+        // Try to detect Tailscale IP after a delay (VPN takes a moment)
+        serviceScope.launch {
+            delay(5000)
+            detectTailscaleIp()
+        }
+    }
+
+    private fun isTailscaleInstalled(): Boolean {
+        return try {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(TAILSCALE_PACKAGE, 0)
+            true
+        } catch (_: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
+    private fun detectTailscaleIp() {
+        try {
+            for (intf in NetworkInterface.getNetworkInterfaces()) {
+                // Tailscale creates a "tun" interface, usually named "tun0" or "tailscale0"
+                if (!intf.name.startsWith("tun") && !intf.name.contains("tailscale")) continue
+                for (addr in intf.inetAddresses) {
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        val tsIp = addr.hostAddress ?: continue
+                        // Tailscale IPs are in the 100.x.x.x range
+                        if (tsIp.startsWith("100.")) {
+                            tailscaleHostname = "http://$tsIp:$PORT"
+                            Log.i(TAG, "Tailscale detected: $tailscaleHostname")
+                            return
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to detect Tailscale IP", e)
+        }
+    }
 
     // ─── Notification ────────────────────────────────────────────────────────
 
@@ -204,7 +268,7 @@ class CaptureService : LifecycleService() {
 
     private fun buildNotification(text: String): Notification {
         val tapIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, tapIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -248,15 +312,18 @@ class CaptureService : LifecycleService() {
     private fun getLocalIpAddress(): String {
         try {
             for (intf in NetworkInterface.getNetworkInterfaces()) {
+                // Skip Tailscale tun interface — we want the LAN IP
+                if (intf.name.startsWith("tun") || intf.name.contains("tailscale")) continue
                 for (addr in intf.inetAddresses) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        return addr.hostAddress ?: "localhost"
+                        val ip = addr.hostAddress ?: continue
+                        if (!ip.startsWith("100.")) return ip // Skip Tailscale CGNAT range
                     }
                 }
             }
         } catch (_: Exception) {}
 
-        // Fallback: try WifiManager
+        // Fallback: WifiManager
         try {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val ip = wm.connectionInfo.ipAddress
