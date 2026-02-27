@@ -85,8 +85,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             // Proceed to capture after storage settings
-            isInitialSetup = true
-            requestMediaProjection()
+            startCameraService()
         }
 
         setContent {
@@ -176,20 +175,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
             SetupStep.CAPTURE -> {
-                // Request storage access silently before capture if needed
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-                    try {
-                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                            data = Uri.parse("package:$packageName")
-                        }
-                        storageAccessLauncher.launch(intent)
-                    } catch (_: Exception) {
-                        val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                        storageAccessLauncher.launch(intent)
-                    }
+                // Request camera permission then start capture
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                 } else {
-                    isInitialSetup = true
-                    requestMediaProjection()
+                    // Request storage access silently before capture if needed
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            storageAccessLauncher.launch(intent)
+                        } catch (_: Exception) {
+                            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            storageAccessLauncher.launch(intent)
+                        }
+                    } else {
+                        // Camera mode — skip MediaProjection, start service directly
+                        startCameraService()
+                    }
                 }
             }
             SetupStep.DONE -> {}
@@ -201,11 +205,24 @@ class MainActivity : ComponentActivity() {
         val current = viewModel.state.value.setupStep
         val next = when (current) {
             SetupStep.NOTIFICATIONS -> SetupStep.CAPTURE
-            SetupStep.CAPTURE -> SetupStep.DONE
+            SetupStep.CAPTURE -> {
+                // Camera permission granted — start the service
+                startCameraService()
+                SetupStep.DONE
+            }
             SetupStep.DONE -> SetupStep.DONE
         }
         Log.i(TAG, "Setup: $current → $next")
         viewModel.setSetupStep(next)
+    }
+
+    private fun startCameraService() {
+        val intent = Intent(this, CaptureService::class.java).apply {
+            action = CaptureService.ACTION_START_CAPTURE
+            putExtra(CaptureService.EXTRA_RESULT_CODE, RESULT_OK)
+            putExtra(CaptureService.EXTRA_QUALITY, "720p")
+        }
+        startForegroundService(intent)
     }
 
     private fun requestMediaProjection() {

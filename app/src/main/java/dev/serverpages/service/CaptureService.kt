@@ -90,15 +90,11 @@ class CaptureService : LifecycleService() {
                 val qualityLabel = intent.getStringExtra(EXTRA_QUALITY) ?: "720p"
                 currentQuality = QualityPreset.fromLabel(qualityLabel) ?: QualityPreset.P720
 
-                if (resultData != null) {
-                    startForeground(NOTIFICATION_ID, buildNotification("Starting capture..."))
-                    acquireWakeLock()
-                    startWebServer()
-                    startCapture(resultCode, resultData)
-                    launchTailscale()
-                } else {
-                    Log.e(TAG, "Missing MediaProjection result data")
-                }
+                startForeground(NOTIFICATION_ID, buildNotification("Starting capture..."))
+                acquireWakeLock()
+                startWebServer()
+                startCapture(resultCode, resultData)
+                launchTailscale()
             }
 
             ACTION_STOP -> {
@@ -156,17 +152,17 @@ class CaptureService : LifecycleService() {
         Log.i(TAG, "HTTP server stopped")
     }
 
-    // ─── Screen Capture ──────────────────────────────────────────────────────
+    // ─── Capture ───────────────────────────────────────────────────────────
 
-    private fun startCapture(resultCode: Int, data: Intent) {
+    private fun startCapture(resultCode: Int, data: Intent?) {
         if (screenCapture?.isCapturing == true) {
             screenCapture?.stop()
         }
 
         screenCapture = ScreenCapture(this, hlsDir)
-        screenCapture!!.start(resultCode, data, currentQuality, serviceScope)
+        // Use camera mode — bypasses MediaProjection
+        screenCapture!!.startCamera(currentQuality, serviceScope)
 
-        val ip = getLocalIpAddress()
         updateNotification(buildLiveNotificationText())
     }
 

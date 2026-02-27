@@ -33,7 +33,7 @@ class HlsWriter(
     private var segmentFirstPtsUs: Long = -1L
     private var mediaFormat: MediaFormat? = null
     private var mediaSequence: Int = 0
-    private var initialManifestWritten: Boolean = false
+    private var firstSegmentDone: Boolean = false
     private val segmentDurations = mutableListOf<Double>() // seconds, for each active segment
 
     init {
@@ -86,11 +86,14 @@ class HlsWriter(
             }
         }
 
-        // Write a preliminary manifest with estimated duration for the in-progress segment
-        // so viewers can connect before the first segment is finalized
-        if (!initialManifestWritten && muxer != null && elapsed > 500_000L) {
-            writeManifest()
-            initialManifestWritten = true
+        // Force a short first segment (~1s) so the manifest appears quickly
+        if (!firstSegmentDone && isKeyFrame && elapsed >= 1_000_000L) {
+            val durationSec = elapsed / 1_000_000.0
+            finalizeMuxer(durationSec)
+            startNewSegment()
+            segmentStartUs = info.presentationTimeUs
+            segmentFirstPtsUs = info.presentationTimeUs
+            firstSegmentDone = true
         }
     }
 
@@ -153,12 +156,17 @@ class HlsWriter(
             ?.sortedBy { it.name }
             ?: return
 
-        if (allSegments.isEmpty()) return
+        // Only include completed segments — in-progress MP4 has no moov atom
+        val completedSegments = if (muxer != null && allSegments.isNotEmpty()) {
+            allSegments.dropLast(1)
+        } else {
+            allSegments.toList()
+        }
+
+        if (completedSegments.isEmpty()) return
 
         val durations = synchronized(segmentDurations) { segmentDurations.toList() }
 
-        // Include all segments — completed ones use their actual duration,
-        // the in-progress segment (if muxer is open) uses an estimate
         val targetDuration = synchronized(segmentDurations) {
             segmentDurations.maxOrNull()?.let { kotlin.math.ceil(it).toInt().coerceAtLeast(3) } ?: 3
         }
@@ -169,13 +177,14 @@ class HlsWriter(
         sb.appendLine("#EXT-X-TARGETDURATION:$targetDuration")
         sb.appendLine("#EXT-X-MEDIA-SEQUENCE:$mediaSequence")
 
-        for ((i, seg) in allSegments.withIndex()) {
+        for ((i, seg) in completedSegments.withIndex()) {
             val dur = if (i < durations.size) durations[i] else 2.0
             sb.appendLine("#EXTINF:${String.format("%.3f", dur)},")
             sb.appendLine(seg.name)
         }
 
         File(hlsDir, MANIFEST_NAME).writeText(sb.toString())
+        Log.d(TAG, "Manifest written: ${completedSegments.size} segments, seq=$mediaSequence")
     }
 
     fun stop() {
@@ -193,7 +202,7 @@ class HlsWriter(
         mediaSequence = 0
         segmentStartUs = -1L
         segmentFirstPtsUs = -1L
-        initialManifestWritten = false
+        firstSegmentDone = false
         synchronized(segmentDurations) { segmentDurations.clear() }
     }
 }

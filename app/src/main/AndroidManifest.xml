@@ -18,6 +18,9 @@
     <!-- Notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Camera -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- Media access -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
