@@ -4,8 +4,11 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -46,6 +49,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var projectionLauncher: ActivityResultLauncher<Intent>
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
+    private lateinit var storageAccessLauncher: ActivityResultLauncher<Intent>
     private var isInitialSetup = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,7 +81,21 @@ class MainActivity : ComponentActivity() {
             if (denied.isNotEmpty()) {
                 Log.w(TAG, "Permissions denied: $denied")
             }
-            // Permissions done — now request MediaProjection
+            // After runtime permissions, check for all-files access
+            checkAllFilesAccess()
+        }
+
+        // Storage access settings launcher (MANAGE_EXTERNAL_STORAGE)
+        storageAccessLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Environment.isExternalStorageManager()) {
+                    Log.i(TAG, "All files access granted")
+                } else {
+                    Log.w(TAG, "All files access denied — media browser will not work")
+                }
+            }
             requestMediaProjection()
         }
 
@@ -136,7 +154,25 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "Requesting permissions: $needed")
             permissionLauncher.launch(needed.toTypedArray())
         } else {
-            // Permissions already granted — go straight to MediaProjection
+            // Runtime permissions granted — check all-files access
+            checkAllFilesAccess()
+        }
+    }
+
+    private fun checkAllFilesAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            Log.i(TAG, "Requesting MANAGE_EXTERNAL_STORAGE")
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                storageAccessLauncher.launch(intent)
+            } catch (_: Exception) {
+                // Fallback for devices that don't support per-app intent
+                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                storageAccessLauncher.launch(intent)
+            }
+        } else {
             requestMediaProjection()
         }
     }
