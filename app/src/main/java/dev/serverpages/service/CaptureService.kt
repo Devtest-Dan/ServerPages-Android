@@ -55,6 +55,7 @@ class CaptureService : LifecycleService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
     private var tailscaleHostname: String = ""
+    private var accessCode: String = ""
 
     private val hlsDir: File by lazy {
         File(cacheDir, "hls").apply { mkdirs() }
@@ -64,7 +65,8 @@ class CaptureService : LifecycleService() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        Log.i(TAG, "Service created")
+        accessCode = String.format("%04d", (0..9999).random())
+        Log.i(TAG, "Service created — access code: $accessCode")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -135,6 +137,7 @@ class CaptureService : LifecycleService() {
             getCaptureState = { screenCapture?.isCapturing ?: false }
             getCurrentQuality = { currentQuality.label }
             onQualityChange = { label -> changeQuality(label) }
+            this.accessCode = this@CaptureService.accessCode
         }
 
         try {
@@ -163,7 +166,7 @@ class CaptureService : LifecycleService() {
         screenCapture!!.start(resultCode, data, currentQuality, serviceScope)
 
         val ip = getLocalIpAddress()
-        updateNotification("LIVE on http://$ip:$PORT")
+        updateNotification("LIVE on http://$ip:$PORT | Code: $accessCode")
     }
 
     private fun stopCapture() {
@@ -191,6 +194,8 @@ class CaptureService : LifecycleService() {
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
     fun getTailscaleUrl(): String = tailscaleHostname
+    fun getAccessCode(): String = accessCode
+    fun getViewerCount(): Int = webServer?.getViewerCount() ?: 0
 
     // ─── Tailscale ───────────────────────────────────────────────────────────
 

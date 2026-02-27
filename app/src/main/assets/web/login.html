@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — ServerPages</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .login-container {
+      max-width: 360px;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 80vh;
+    }
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 28px;
+      width: 100%;
+      text-align: center;
+    }
+    .code-input {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin: 24px 0;
+    }
+    .code-input input {
+      width: 52px;
+      height: 64px;
+      text-align: center;
+      font-size: 28px;
+      font-weight: 700;
+      background: var(--bg);
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s;
+      -moz-appearance: textfield;
+    }
+    .code-input input::-webkit-outer-spin-button,
+    .code-input input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .code-input input:focus {
+      border-color: var(--accent);
+    }
+    .code-input input.error {
+      border-color: var(--danger);
+      animation: shake 0.3s;
+    }
+    @keyframes shake {
+      25% { transform: translateX(-4px); }
+      50% { transform: translateX(4px); }
+      75% { transform: translateX(-4px); }
+    }
+    .login-btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #000;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .login-btn:hover { background: var(--accent-hover); }
+    .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .login-error {
+      color: var(--danger);
+      font-size: 13px;
+      margin-top: 12px;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>ServerPages</h1>
+  </div>
+
+  <div class="login-container">
+    <div class="login-card">
+      <h2 style="color: var(--text); font-size: 20px; margin-bottom: 4px;">Enter Access Code</h2>
+      <p style="color: var(--text-muted); font-size: 13px;">Ask the host for the 4-digit code</p>
+
+      <div class="code-input" id="codeInput">
+        <input type="number" min="0" max="9" maxlength="1" data-idx="0" autofocus>
+        <input type="number" min="0" max="9" maxlength="1" data-idx="1">
+        <input type="number" min="0" max="9" maxlength="1" data-idx="2">
+        <input type="number" min="0" max="9" maxlength="1" data-idx="3">
+      </div>
+
+      <button class="login-btn" id="loginBtn" onclick="submit()">Enter</button>
+      <div class="login-error" id="error"></div>
+    </div>
+  </div>
+
+  <script>
+    const inputs = document.querySelectorAll('.code-input input');
+    const errorEl = document.getElementById('error');
+
+    // Auto-focus next input on digit entry
+    inputs.forEach((input, i) => {
+      input.addEventListener('input', (e) => {
+        const val = e.target.value;
+        if (val.length > 1) e.target.value = val.slice(-1);
+        if (val && i < 3) inputs[i + 1].focus();
+        clearError();
+      });
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !input.value && i > 0) {
+          inputs[i - 1].focus();
+        }
+        if (e.key === 'Enter') submit();
+      });
+
+      // Handle paste of full code
+      input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const paste = (e.clipboardData || window.clipboardData).getData('text').trim();
+        if (/^\d{4}$/.test(paste)) {
+          inputs.forEach((inp, j) => { inp.value = paste[j]; });
+          inputs[3].focus();
+        }
+      });
+    });
+
+    function getCode() {
+      return Array.from(inputs).map(i => i.value).join('');
+    }
+
+    function clearError() {
+      errorEl.textContent = '';
+      inputs.forEach(i => i.classList.remove('error'));
+    }
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      inputs.forEach(i => i.classList.add('error'));
+      setTimeout(() => inputs.forEach(i => i.classList.remove('error')), 500);
+    }
+
+    async function submit() {
+      const code = getCode();
+      if (code.length !== 4) {
+        showError('Enter all 4 digits');
+        return;
+      }
+
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+
+        if (res.ok) {
+          window.location.href = '/';
+        } else {
+          showError('Wrong code');
+          inputs.forEach(i => { i.value = ''; });
+          inputs[0].focus();
+        }
+      } catch (e) {
+        showError('Connection error');
+      }
+
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>

@@ -8,12 +8,13 @@ import fi.iki.elonen.NanoHTTPD
 import dev.serverpages.capture.QualityPreset
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Embedded HTTP server on port 3333. Serves:
- * - Static web pages from assets/web/
- * - HLS segments from the cache directory
- * - API routes matching the Windows ServerPages version
+ * Embedded HTTP server on port 3333.
+ *
+ * Auth: 4-digit code → cookie session. Admin path bypasses auth.
+ * Viewer tracking: counts unique IPs fetching /hls/screen.m3u8 (excludes admin).
  */
 @Suppress("DEPRECATION")
 class WebServer(
@@ -24,6 +25,8 @@ class WebServer(
 
     companion object {
         private const val TAG = "WebServer"
+        private const val SESSION_COOKIE = "sp_token"
+        private const val VIEWER_TIMEOUT_MS = 30_000L
     }
 
     private val gson = Gson()
@@ -34,29 +37,76 @@ class WebServer(
     var getCaptureState: (() -> Boolean)? = null
     var getCurrentQuality: (() -> String)? = null
 
+    // Auth
+    var accessCode: String = "0000"
+    private val validTokens = ConcurrentHashMap.newKeySet<String>()
+
+    // Viewer tracking: IP → last seen timestamp
+    private val viewers = ConcurrentHashMap<String, Long>()
+
+    fun getViewerCount(): Int {
+        val cutoff = System.currentTimeMillis() - VIEWER_TIMEOUT_MS
+        viewers.entries.removeIf { it.value < cutoff }
+        return viewers.size
+    }
+
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
         val method = session.method
+        val clientIp = session.remoteIpAddress ?: "unknown"
 
         return try {
             when {
-                // API routes
-                uri == "/api/status" && method == Method.GET -> handleStatus()
-                uri == "/api/files" && method == Method.GET -> handleFiles(session)
-                uri == "/api/stream" && method == Method.GET -> handleStream(session)
-                uri == "/api/download" && method == Method.GET -> handleDownload(session)
-                uri == "/api/quality" && method == Method.POST -> handleQuality(session)
+                // ─── Public routes (no auth) ─────────────────────────────
+                uri == "/login" || uri == "/login.html" ->
+                    serveAsset("web/login.html", "text/html")
+                uri == "/style.css" ->
+                    serveAsset("web/style.css", "text/css")
+                uri == "/api/auth" && method == Method.POST ->
+                    handleAuth(session)
 
-                // HLS segments
-                uri.startsWith("/hls/") -> handleHls(uri.removePrefix("/hls/"))
+                // ─── Admin routes (no auth, excluded from viewer count) ──
+                uri == "/admin" || uri == "/admin/" || uri == "/admin/live.html" ->
+                    serveAsset("web/admin.html", "text/html")
+                uri.startsWith("/admin/hls/") ->
+                    handleHls(uri.removePrefix("/admin/hls/"))
+                uri == "/admin/api/status" ->
+                    handleStatus()
 
-                // Static web pages from assets
-                uri == "/" || uri == "/index.html" -> serveAsset("web/index.html", "text/html")
-                uri == "/live.html" -> serveAsset("web/live.html", "text/html")
-                uri == "/media.html" -> serveAsset("web/media.html", "text/html")
-                uri == "/style.css" -> serveAsset("web/style.css", "text/css")
+                // ─── Everything else requires auth ───────────────────────
+                else -> {
+                    if (!isAuthenticated(session)) {
+                        return redirectToLogin()
+                    }
 
-                else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_HTML, "Not Found")
+                    when {
+                        uri == "/api/status" && method == Method.GET -> handleStatus()
+                        uri == "/api/files" && method == Method.GET -> handleFiles(session)
+                        uri == "/api/stream" && method == Method.GET -> handleStream(session)
+                        uri == "/api/download" && method == Method.GET -> handleDownload(session)
+                        uri == "/api/quality" && method == Method.POST -> handleQuality(session)
+
+                        uri.startsWith("/hls/") -> {
+                            val fileName = uri.removePrefix("/hls/")
+                            // Track viewer on manifest request
+                            if (fileName == "screen.m3u8") {
+                                viewers[clientIp] = System.currentTimeMillis()
+                            }
+                            handleHls(fileName)
+                        }
+
+                        uri == "/" || uri == "/index.html" ->
+                            serveAsset("web/index.html", "text/html")
+                        uri == "/live.html" ->
+                            serveAsset("web/live.html", "text/html")
+                        uri == "/media.html" ->
+                            serveAsset("web/media.html", "text/html")
+
+                        else -> newFixedLengthResponse(
+                            Response.Status.NOT_FOUND, MIME_HTML, "Not Found"
+                        )
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error serving $uri", e)
@@ -64,7 +114,54 @@ class WebServer(
         }
     }
 
-    // ─── API: Status ─────────────────────────────────────────────────────────
+    // ─── Auth ─────────────────────────────────────────────────────────────────
+
+    private fun isAuthenticated(session: IHTTPSession): Boolean {
+        val cookies = session.cookies ?: return false
+        val token = cookies.read(SESSION_COOKIE) ?: return false
+        return validTokens.contains(token)
+    }
+
+    private fun handleAuth(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+
+        val json = try {
+            gson.fromJson(postData, JsonObject::class.java)
+        } catch (_: Exception) { null }
+        val code = json?.get("code")?.asString ?: ""
+
+        if (code != accessCode) {
+            return jsonResponse(
+                Response.Status.FORBIDDEN,
+                mapOf("error" to "Invalid code")
+            )
+        }
+
+        // Generate session token
+        val token = java.util.UUID.randomUUID().toString()
+        validTokens.add(token)
+
+        val response = jsonResponse(
+            Response.Status.OK,
+            mapOf("ok" to true)
+        )
+        response.addHeader("Set-Cookie", "$SESSION_COOKIE=$token; Path=/; HttpOnly; SameSite=Strict")
+        return response
+    }
+
+    private fun redirectToLogin(): Response {
+        val response = newFixedLengthResponse(
+            Response.Status.REDIRECT,
+            MIME_HTML,
+            "Redirecting to login..."
+        )
+        response.addHeader("Location", "/login")
+        return response
+    }
+
+    // ─── API: Status ──────────────────────────────────────────────────────────
 
     private fun handleStatus(): Response {
         val capturing = getCaptureState?.invoke() ?: false
@@ -77,19 +174,19 @@ class WebServer(
                 "capturing" to capturing,
                 "uptime" to uptimeSec,
                 "streamReady" to (capturing && manifestExists),
-                "quality" to quality
+                "quality" to quality,
+                "viewers" to getViewerCount()
             )
         )
     }
 
-    // ─── API: Files ──────────────────────────────────────────────────────────
+    // ─── API: Files ───────────────────────────────────────────────────────────
 
     private fun handleFiles(session: IHTTPSession): Response {
         val dirParam = session.parms["dir"] ?: return jsonResponse(
             Response.Status.BAD_REQUEST, mapOf("error" to "Missing dir parameter")
         )
 
-        // Resolve short names (DCIM, Pictures, etc.) to absolute paths
         val dir = MediaBrowser.resolveDir(dirParam)
 
         if (!MediaBrowser.isPathAllowed(dir)) {
@@ -109,7 +206,7 @@ class WebServer(
         }
     }
 
-    // ─── API: Stream (with Range support) ────────────────────────────────────
+    // ─── API: Stream (with Range support) ─────────────────────────────────────
 
     private fun handleStream(session: IHTTPSession): Response {
         val filePath = session.parms["path"]
@@ -168,7 +265,7 @@ class WebServer(
         return response
     }
 
-    // ─── API: Download ───────────────────────────────────────────────────────
+    // ─── API: Download ────────────────────────────────────────────────────────
 
     private fun handleDownload(session: IHTTPSession): Response {
         val filePath = session.parms["path"]
@@ -188,16 +285,14 @@ class WebServer(
         return response
     }
 
-    // ─── API: Quality toggle ─────────────────────────────────────────────────
+    // ─── API: Quality toggle ──────────────────────────────────────────────────
 
     private fun handleQuality(session: IHTTPSession): Response {
-        // Parse JSON body
-        val contentLength = session.headers["content-length"]?.toIntOrNull() ?: 0
         val body = HashMap<String, String>()
         session.parseBody(body)
         val postData = body["postData"] ?: ""
 
-        val json = try { gson.fromJson(postData, JsonObject::class.java) } catch (e: Exception) { null }
+        val json = try { gson.fromJson(postData, JsonObject::class.java) } catch (_: Exception) { null }
         val quality = json?.get("quality")?.asString
             ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing quality"))
 
@@ -214,13 +309,10 @@ class WebServer(
         }
 
         val changed = onQualityChange?.invoke(quality) ?: false
-        return jsonResponse(
-            Response.Status.OK,
-            mapOf("quality" to quality, "changed" to changed)
-        )
+        return jsonResponse(Response.Status.OK, mapOf("quality" to quality, "changed" to changed))
     }
 
-    // ─── HLS segment serving ─────────────────────────────────────────────────
+    // ─── HLS segment serving ──────────────────────────────────────────────────
 
     private fun handleHls(fileName: String): Response {
         val file = File(hlsDir, fileName)
@@ -242,7 +334,7 @@ class WebServer(
         return response
     }
 
-    // ─── Static asset serving ────────────────────────────────────────────────
+    // ─── Static asset serving ─────────────────────────────────────────────────
 
     private fun serveAsset(assetPath: String, mimeType: String): Response {
         return try {
@@ -255,7 +347,7 @@ class WebServer(
         }
     }
 
-    // ─── Helpers ─────────────────────────────────────────────────────────────
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private fun jsonResponse(status: Response.Status, data: Any): Response {
         val json = gson.toJson(data)

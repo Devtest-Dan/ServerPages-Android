@@ -22,12 +22,8 @@ private val TextMuted = Color(0xFF888888)
 private val AccentColor = Color(0xFF4FC3F7)
 private val DangerColor = Color(0xFFEF5350)
 private val GreenColor = Color(0xFF66BB6A)
+private val OrangeColor = Color(0xFFFFA726)
 
-/**
- * Minimal status display — no interactive controls.
- * This screen is only visible briefly during permission requests.
- * Once capture starts, the activity moves to background.
- */
 @Composable
 fun MainScreen(state: ServiceState) {
     Column(
@@ -77,6 +73,71 @@ fun MainScreen(state: ServiceState) {
         if (state.serverRunning) {
             Spacer(Modifier.height(24.dp))
 
+            // Access code card
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = SurfaceColor,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "VIEWER CODE",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 2.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = state.accessCode,
+                        color = OrangeColor,
+                        fontSize = 48.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 12.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Share this code with viewers",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // Viewer count
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = SurfaceColor,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "${state.viewerCount}",
+                        color = if (state.viewerCount > 0) GreenColor else TextMuted,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (state.viewerCount == 1) "viewer watching" else "viewers watching",
+                        color = TextMuted,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // Server URL
             Surface(
                 shape = RoundedCornerShape(8.dp),
                 color = Color(0xFF111111),
@@ -85,14 +146,14 @@ fun MainScreen(state: ServiceState) {
                 Text(
                     text = state.serverUrl,
                     color = AccentColor,
-                    fontSize = 16.sp,
-                    modifier = Modifier.padding(16.dp),
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(12.dp),
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
 
             Text(
                 text = "Quality: ${state.quality}",
@@ -101,25 +162,25 @@ fun MainScreen(state: ServiceState) {
             )
 
             if (state.tailscaleUrl.isNotEmpty()) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = Color(0xFF111111),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
                         Text(
                             text = "Tailscale",
                             color = GreenColor,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             text = state.tailscaleUrl,
                             color = AccentColor,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                     }

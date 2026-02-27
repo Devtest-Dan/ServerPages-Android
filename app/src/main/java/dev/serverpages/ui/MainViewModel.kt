@@ -12,7 +12,9 @@ data class ServiceState(
     val capturing: Boolean = false,
     val quality: String = "720p",
     val serverUrl: String = "",
-    val tailscaleUrl: String = ""
+    val tailscaleUrl: String = "",
+    val accessCode: String = "",
+    val viewerCount: Int = 0
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -28,7 +30,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 capturing = service.isCapturing(),
                 quality = service.getQualityLabel(),
                 serverUrl = service.getServerUrl(),
-                tailscaleUrl = service.getTailscaleUrl()
+                tailscaleUrl = service.getTailscaleUrl(),
+                accessCode = service.getAccessCode(),
+                viewerCount = service.getViewerCount()
             )
         } else {
             ServiceState()
