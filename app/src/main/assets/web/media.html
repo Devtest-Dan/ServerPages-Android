@@ -41,11 +41,7 @@
   <div class="header">
     <h1>ServerPages</h1>
     <span class="status-dot" id="statusDot"></span>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/live.html">Live</a>
-      <a href="/media.html" class="active">Media</a>
-    </nav>
+    <nav id="navLinks"></nav>
   </div>
 
   <div class="container">
@@ -76,6 +72,18 @@
   </div>
 
   <script>
+    // Detect admin context — use admin API paths when served under /admin/
+    const isAdmin = window.location.pathname.startsWith('/admin');
+    const API_PREFIX = isAdmin ? '/admin' : '';
+
+    // Build nav links based on context
+    const navEl = document.getElementById('navLinks');
+    if (isAdmin) {
+      navEl.innerHTML = '<a href="/admin">Monitor</a><a href="/admin/media.html" class="active">Media</a>';
+    } else {
+      navEl.innerHTML = '<a href="/">Dashboard</a><a href="/live.html">Live</a><a href="/media.html" class="active">Media</a>';
+    }
+
     // Known Android media directories
     const MEDIA_DIRS = [
       { label: 'DCIM', key: 'DCIM' },
@@ -111,7 +119,7 @@
     // Status dot
     async function checkStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await fetch(`${API_PREFIX}/api/status`);
         const data = await res.json();
         document.getElementById('statusDot').classList.toggle('live', data.streamReady);
       } catch (e) {}
@@ -126,7 +134,7 @@
         // Try each known dir to find the storage root
         for (const d of MEDIA_DIRS) {
           try {
-            const res = await fetch(`/api/files?dir=${encodeURIComponent(d.key)}`);
+            const res = await fetch(`${API_PREFIX}/api/files?dir=${encodeURIComponent(d.key)}`);
             const data = await res.json();
             if (data.currentDir) {
               // Extract the storage root from the absolute path
@@ -175,7 +183,7 @@
       listEl.innerHTML = '<div class="loading">Loading files</div>';
 
       try {
-        const res = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`);
+        const res = await fetch(`${API_PREFIX}/api/files?dir=${encodeURIComponent(dir)}`);
         const data = await res.json();
 
         if (data.error) {
@@ -214,7 +222,7 @@
           const icon = icons[f.type] || '&#128196;';
           const iconClass = f.type;
           const iconHtml = f.type === 'image'
-            ? `<img class="thumb-preview" src="/api/stream?path=${encodeURIComponent(f.path)}" loading="lazy" alt="">`
+            ? `<img class="thumb-preview" src="${API_PREFIX}/api/stream?path=${encodeURIComponent(f.path)}" loading="lazy" alt="">`
             : `<div class="file-icon ${iconClass}">${icon}</div>`;
           html += `
             <div class="file-item" onclick="playFile('${escapeAttr(f.path)}', '${f.type}', '${escapeAttr(f.name)}')">
@@ -224,7 +232,7 @@
                 <div class="file-meta">${formatSize(f.size)}</div>
               </div>
               <div class="file-actions">
-                <a class="btn" href="/api/download?path=${encodeURIComponent(f.path)}" onclick="event.stopPropagation()">Download</a>
+                <a class="btn" href="${API_PREFIX}/api/download?path=${encodeURIComponent(f.path)}" onclick="event.stopPropagation()">Download</a>
               </div>
             </div>`;
         }
@@ -251,10 +259,10 @@
       const videoEl = document.getElementById('videoPlayer');
       const audioEl = document.getElementById('audioPlayer');
       const imageEl = document.getElementById('imagePlayer');
-      const streamUrl = `/api/stream?path=${encodeURIComponent(filePath)}`;
+      const streamUrl = `${API_PREFIX}/api/stream?path=${encodeURIComponent(filePath)}`;
 
       document.getElementById('playerTitle').textContent = name || filePath.split('/').pop();
-      document.getElementById('downloadBtn').href = `/api/download?path=${encodeURIComponent(filePath)}`;
+      document.getElementById('downloadBtn').href = `${API_PREFIX}/api/download?path=${encodeURIComponent(filePath)}`;
 
       videoEl.style.display = 'none';
       audioEl.style.display = 'none';

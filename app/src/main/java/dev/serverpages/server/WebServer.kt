@@ -68,10 +68,18 @@ class WebServer(
                 // ─── Admin routes (no auth, excluded from viewer count) ──
                 uri == "/admin" || uri == "/admin/" || uri == "/admin/live.html" ->
                     serveAsset("web/admin.html", "text/html")
+                uri == "/admin/media.html" ->
+                    serveAsset("web/media.html", "text/html")
                 uri.startsWith("/admin/hls/") ->
                     handleHls(uri.removePrefix("/admin/hls/"))
                 uri == "/admin/api/status" ->
                     handleStatus()
+                uri == "/admin/api/files" && method == Method.GET ->
+                    handleFiles(session)
+                uri == "/admin/api/stream" && method == Method.GET ->
+                    handleStream(session)
+                uri == "/admin/api/download" && method == Method.GET ->
+                    handleDownload(session)
 
                 // ─── Everything else requires auth ───────────────────────
                 else -> {
@@ -81,9 +89,6 @@ class WebServer(
 
                     when {
                         uri == "/api/status" && method == Method.GET -> handleStatus()
-                        uri == "/api/files" && method == Method.GET -> handleFiles(session)
-                        uri == "/api/stream" && method == Method.GET -> handleStream(session)
-                        uri == "/api/download" && method == Method.GET -> handleDownload(session)
                         uri == "/api/quality" && method == Method.POST -> handleQuality(session)
 
                         uri.startsWith("/hls/") -> {
@@ -99,8 +104,6 @@ class WebServer(
                             serveAsset("web/index.html", "text/html")
                         uri == "/live.html" ->
                             serveAsset("web/live.html", "text/html")
-                        uri == "/media.html" ->
-                            serveAsset("web/media.html", "text/html")
 
                         else -> newFixedLengthResponse(
                             Response.Status.NOT_FOUND, MIME_HTML, "Not Found"
