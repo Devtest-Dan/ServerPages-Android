@@ -15,6 +15,7 @@ import java.io.FileInputStream
  * - HLS segments from the cache directory
  * - API routes matching the Windows ServerPages version
  */
+@Suppress("DEPRECATION")
 class WebServer(
     private val context: Context,
     private val hlsDir: File,

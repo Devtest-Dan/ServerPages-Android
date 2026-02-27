@@ -77,6 +77,7 @@ class CaptureService : LifecycleService() {
 
             ACTION_START_CAPTURE -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+                @Suppress("DEPRECATION")
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
                 val qualityLabel = intent.getStringExtra(EXTRA_QUALITY) ?: "720p"
                 currentQuality = QualityPreset.fromLabel(qualityLabel) ?: QualityPreset.P720
@@ -243,6 +244,7 @@ class CaptureService : LifecycleService() {
 
     // ─── Network ─────────────────────────────────────────────────────────────
 
+    @Suppress("DEPRECATION")
     private fun getLocalIpAddress(): String {
         try {
             for (intf in NetworkInterface.getNetworkInterfaces()) {

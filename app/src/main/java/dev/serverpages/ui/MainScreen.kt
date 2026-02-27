@@ -63,9 +63,7 @@ fun MainScreen(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             color = SurfaceColor,
-            border = ButtonDefaults.outlinedButtonBorder.copy(
-                width = 1.dp,
-            ).let { null },
+            border = null,
             tonalElevation = 0.dp
         ) {
             Column(

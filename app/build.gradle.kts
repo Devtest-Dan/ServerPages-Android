@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "dev.serverpages"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "dev.serverpages"
