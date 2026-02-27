@@ -191,12 +191,15 @@ class WebServer(
     }
 
     private fun redirectToLogin(): Response {
+        // Use 302 (temporary) NOT 301 — browsers cache 301 permanently
+        // which breaks login flow after auth cookie is set
         val response = newFixedLengthResponse(
-            Response.Status.REDIRECT,
+            Response.Status.REDIRECT_SEE_OTHER,
             MIME_HTML,
             "Redirecting to login..."
         )
         response.addHeader("Location", "/login")
+        response.addHeader("Cache-Control", "no-store")
         return response
     }
 
