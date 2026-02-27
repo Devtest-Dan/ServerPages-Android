@@ -133,14 +133,25 @@ class WebServer(
     }
 
     private fun handleAuth(session: IHTTPSession): Response {
+        // Read raw body — NanoHTTPd parseBody can miss JSON with application/json content type
         val body = HashMap<String, String>()
-        session.parseBody(body)
-        val postData = body["postData"] ?: ""
+        try { session.parseBody(body) } catch (_: Exception) {}
 
+        // Try multiple sources: postData (form), then raw body content
+        val postData = body["postData"] ?: body["content"] ?: ""
+
+        // Also try reading from parms if NanoHTTPd parsed it differently
         val json = try {
-            gson.fromJson(postData, JsonObject::class.java)
+            if (postData.isNotEmpty()) {
+                gson.fromJson(postData, JsonObject::class.java)
+            } else null
         } catch (_: Exception) { null }
-        val code = json?.get("code")?.asString ?: ""
+
+        val code = json?.get("code")?.asString
+            ?: session.parms["code"]
+            ?: ""
+
+        Log.d(TAG, "Auth attempt — code: '$code', accessCode: '$accessCode', body keys: ${body.keys}, postData: '$postData'")
 
         if (code != accessCode) {
             return jsonResponse(
@@ -157,7 +168,8 @@ class WebServer(
             Response.Status.OK,
             mapOf("ok" to true)
         )
-        response.addHeader("Set-Cookie", "$SESSION_COOKIE=$token; Path=/; HttpOnly; SameSite=Strict")
+        // Use SameSite=Lax for broader compatibility over HTTP
+        response.addHeader("Set-Cookie", "$SESSION_COOKIE=$token; Path=/; HttpOnly; SameSite=Lax")
         return response
     }
 
