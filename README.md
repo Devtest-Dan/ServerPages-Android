@@ -11,7 +11,7 @@ Unattended screen broadcaster + media server for Android. Turns any phone into a
 - **Live viewer counter** — real-time viewer count on the app and admin page
 - **Media browser** — browse DCIM, Pictures, Videos, Music, Downloads (admin only)
 - **Embedded HTTP server** — NanoHTTPd on port 3333, no external dependencies
-- **Tailscale integration** — auto-launches Tailscale, detects tailnet IP, enables remote access
+- **Tailscale integration** — auto-launches Tailscale, detects tailnet IP, shows URL in notification + admin page
 - **Quality toggle** — switch 720p/1080p from the browser
 - **Dark theme** — matches the Windows ServerPages UI
 
@@ -43,6 +43,11 @@ That's it. The phone is now streaming.
 4. ServerPages auto-detects and auto-launches Tailscale on every boot — no further setup needed
 5. Access from any device on your tailnet: `http://100.x.x.x:3333`
 
+The Tailscale URL is shown in three places once detected:
+- **Notification** — second line below the LAN URL
+- **Admin page** — green text in the stream info bar
+- **App screen** — Tailscale card at the bottom
+
 For public internet access, enable [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) from the admin console for this device.
 
 ## Access Code
@@ -50,7 +55,7 @@ For public internet access, enable [Tailscale Funnel](https://tailscale.com/kb/1
 On each service start, a random **4-digit code** is generated. Viewers must enter this code to watch the live stream. The code is shown:
 
 - On the **app UI** — large orange digits under "VIEWER CODE"
-- In the **notification** — `LIVE on http://x.x.x.x:3333 | Code: 1234`
+- In the **notification** — `LIVE on http://x.x.x.x:3333 | Code: 1234` (+ Tailscale URL if detected)
 - On the **admin page** — via the status API
 
 Share this code with people you want to give access. The code changes every time the service restarts.
@@ -74,6 +79,8 @@ The admin stream is **not counted** in the viewer total. Media browsing is only 
 ### Viewer Counter
 
 The app shows a live count of how many viewers are currently watching. A viewer is counted when they fetch the HLS manifest (`/hls/screen.m3u8`). Viewers are removed from the count after 30 seconds of inactivity. The admin stream uses a separate path (`/admin/hls/`) and is excluded.
+
+**Note:** For 10+ viewers, use the Windows version of ServerPages on a computer. A phone's network and CPU are not designed for high concurrent viewer counts.
 
 ## Daily Use
 
@@ -115,7 +122,7 @@ This single tap per reboot is the **only human interaction** — Android does no
 | `/admin/media.html` | GET | Media file browser |
 | `/admin/hls/screen.m3u8` | GET | HLS manifest (admin) |
 | `/admin/hls/segNNNNN.mp4` | GET | HLS segments (admin) |
-| `/admin/api/status` | GET | Server status + viewer count |
+| `/admin/api/status` | GET | Server status + viewer count + Tailscale URL |
 | `/admin/api/files?dir=...` | GET | Directory listing (JSON) |
 | `/admin/api/stream?path=...` | GET | File streaming (Range/206 support) |
 | `/admin/api/download?path=...` | GET | File download |
@@ -128,7 +135,7 @@ This single tap per reboot is the **only human interaction** — Android does no
 | `/live.html` | GET | Live HLS stream player |
 | `/hls/screen.m3u8` | GET | HLS manifest (counts as viewer) |
 | `/hls/segNNNNN.mp4` | GET | HLS segments |
-| `/api/status` | GET | Server status (capturing, uptime, quality, viewers) |
+| `/api/status` | GET | Server status (capturing, uptime, quality, viewers, tailscaleUrl) |
 | `/api/quality` | POST | Switch 720p/1080p `{"quality":"1080p"}` |
 
 ## Architecture
