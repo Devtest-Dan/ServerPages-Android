@@ -7,9 +7,9 @@ Unattended screen broadcaster + media server for Android. Turns any phone into a
 - **Unattended operation** — auto-starts on boot, runs forever, no UI interaction needed
 - **Live screen capture** — MediaProjection → H.264 → HLS (720p/1080p)
 - **4-digit access code** — viewers must enter a code to watch the stream
-- **Admin monitor** — unauthenticated stream at `/admin` for the device owner
+- **Admin monitor** — unauthenticated stream + media browser at `/admin` for the device owner
 - **Live viewer counter** — real-time viewer count on the app and admin page
-- **Media browser** — browse DCIM, Pictures, Videos, Music, Downloads
+- **Media browser** — browse DCIM, Pictures, Videos, Music, Downloads (admin only)
 - **Embedded HTTP server** — NanoHTTPd on port 3333, no external dependencies
 - **Tailscale integration** — auto-launches Tailscale, detects tailnet IP, enables remote access
 - **Quality toggle** — switch 720p/1080p from the browser
@@ -47,7 +47,7 @@ For public internet access, enable [Tailscale Funnel](https://tailscale.com/kb/1
 
 ## Access Code
 
-On each service start, a random **4-digit code** is generated. Viewers must enter this code to access the stream and media browser. The code is shown:
+On each service start, a random **4-digit code** is generated. Viewers must enter this code to watch the live stream. The code is shown:
 
 - On the **app UI** — large orange digits under "VIEWER CODE"
 - In the **notification** — `LIVE on http://x.x.x.x:3333 | Code: 1234`
@@ -59,12 +59,17 @@ Share this code with people you want to give access. The code changes every time
 
 1. Viewer opens `http://<phone-ip>:3333` in a browser
 2. Redirected to the **login page** — enters the 4-digit code
-3. On success, a session cookie is set and they can access the stream and media
+3. On success, a session cookie is set and they can watch the live stream
 4. Wrong code shows an error with shake animation, inputs clear for retry
 
 ### Admin Monitor
 
-The admin stream at `http://<phone-ip>:3333/admin` requires **no authentication**. Use it to verify the stream is working without needing the access code. The admin stream is **not counted** in the viewer total.
+The admin page at `http://<phone-ip>:3333/admin` requires **no authentication**. It provides:
+
+- **Stream monitor** — verify the stream is working without needing the access code
+- **Media browser** — browse and play files from DCIM, Pictures, Videos, Music, Downloads
+
+The admin stream is **not counted** in the viewer total. Media browsing is only available through the admin page — authenticated viewers can only watch the live stream.
 
 ### Viewer Counter
 
@@ -75,10 +80,9 @@ The app shows a live count of how many viewers are currently watching. A viewer 
 **Zero interaction.** The phone streams and serves files 24/7.
 
 Open in any browser:
-- `http://<phone-ip>:3333` — dashboard (requires access code)
+- `http://<phone-ip>:3333` — viewer dashboard with stream preview (requires access code)
 - `http://<phone-ip>:3333/live.html` — full-screen live stream with quality toggle (requires access code)
-- `http://<phone-ip>:3333/media.html` — browse and play phone media files (requires access code)
-- `http://<phone-ip>:3333/admin` — admin stream monitor (no auth, excluded from viewer count)
+- `http://<phone-ip>:3333/admin` — admin: stream monitor + media browser (no auth, excluded from viewer count)
 - `http://<phone-ip>:3333/login` — login page for viewers
 
 ## After Reboot
@@ -108,23 +112,23 @@ This single tap per reboot is the **only human interaction** — Android does no
 | Route | Method | Description |
 |---|---|---|
 | `/admin` | GET | Admin stream monitor page |
+| `/admin/media.html` | GET | Media file browser |
 | `/admin/hls/screen.m3u8` | GET | HLS manifest (admin) |
 | `/admin/hls/segNNNNN.mp4` | GET | HLS segments (admin) |
 | `/admin/api/status` | GET | Server status + viewer count |
+| `/admin/api/files?dir=...` | GET | Directory listing (JSON) |
+| `/admin/api/stream?path=...` | GET | File streaming (Range/206 support) |
+| `/admin/api/download?path=...` | GET | File download |
 
 ### Protected (requires access code)
 
 | Route | Method | Description |
 |---|---|---|
-| `/` | GET | Dashboard |
+| `/` | GET | Dashboard (stream preview) |
 | `/live.html` | GET | Live HLS stream player |
-| `/media.html` | GET | Media file browser |
 | `/hls/screen.m3u8` | GET | HLS manifest (counts as viewer) |
 | `/hls/segNNNNN.mp4` | GET | HLS segments |
 | `/api/status` | GET | Server status (capturing, uptime, quality, viewers) |
-| `/api/files?dir=...` | GET | Directory listing (JSON) |
-| `/api/stream?path=...` | GET | File streaming (Range/206 support) |
-| `/api/download?path=...` | GET | File download |
 | `/api/quality` | POST | Switch 720p/1080p `{"quality":"1080p"}` |
 
 ## Architecture
@@ -137,8 +141,8 @@ BootReceiver (BOOT_COMPLETED)
 │   │   ├── Auth layer (cookie sessions, 4-digit code validation)
 │   │   ├── Viewer tracking (IP → timestamp, 30s expiry)
 │   │   ├── Public: /login, /api/auth, /style.css
-│   │   ├── Admin: /admin, /admin/hls/*, /admin/api/status
-│   │   ├── Protected: /, /live.html, /media.html, /hls/*, /api/*
+│   │   ├── Admin: /admin, /admin/media.html, /admin/hls/*, /admin/api/*
+│   │   ├── Protected: /, /live.html, /hls/*, /api/status, /api/quality
 │   │   ├── Static pages (assets/web/)
 │   │   └── HLS segments (cache/hls/)
 │   ├── ScreenCapture (MediaProjection → VirtualDisplay → MediaCodec → HlsWriter)
