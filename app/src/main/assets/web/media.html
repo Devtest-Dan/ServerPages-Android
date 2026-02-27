@@ -63,7 +63,10 @@
     <div id="browserView">
       <div class="drive-selector" id="dirButtons"></div>
 
-      <div class="breadcrumb" id="breadcrumb"></div>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div class="breadcrumb" id="breadcrumb" style="flex:1;"></div>
+        <a class="btn btn-accent" id="downloadFolderBtn" style="display:none; font-size:12px; padding:4px 12px; white-space:nowrap;" href="#" download>Download Folder</a>
+      </div>
 
       <div id="fileList" class="file-list">
         <div class="loading">Loading files</div>
@@ -192,6 +195,12 @@
         }
 
         buildBreadcrumb(data.currentDir);
+
+        // Show download folder button
+        const dlBtn = document.getElementById('downloadFolderBtn');
+        dlBtn.href = `${API_PREFIX}/api/download-folder?dir=${encodeURIComponent(dir)}`;
+        dlBtn.style.display = '';
+
         let html = '';
 
         // Parent directory

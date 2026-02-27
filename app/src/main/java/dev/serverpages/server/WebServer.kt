@@ -8,7 +8,11 @@ import fi.iki.elonen.NanoHTTPD
 import dev.serverpages.capture.QualityPreset
 import java.io.File
 import java.io.FileInputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Embedded HTTP server on port 3333.
@@ -81,6 +85,8 @@ class WebServer(
                     handleStream(session)
                 uri == "/admin/api/download" && method == Method.GET ->
                     handleDownload(session)
+                uri == "/admin/api/download-folder" && method == Method.GET ->
+                    handleDownloadFolder(session)
 
                 // ─── Everything else requires auth ───────────────────────
                 else -> {
@@ -290,6 +296,64 @@ class WebServer(
         val response = newFixedLengthResponse(Response.Status.OK, "application/octet-stream", fis, file.length())
         response.addHeader("Content-Disposition", "attachment; filename=\"${file.name}\"")
         return response
+    }
+
+    // ─── API: Download Folder (zip) ────────────────────────────────────────────
+
+    private fun handleDownloadFolder(session: IHTTPSession): Response {
+        val dirParam = session.parms["dir"]
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing dir parameter"))
+
+        val dir = File(MediaBrowser.resolveDir(dirParam))
+        if (!MediaBrowser.isPathAllowed(dir.absolutePath)) {
+            return jsonResponse(Response.Status.FORBIDDEN, mapOf("error" to "Access denied"))
+        }
+        if (!dir.exists() || !dir.isDirectory) {
+            return jsonResponse(Response.Status.NOT_FOUND, mapOf("error" to "Directory not found"))
+        }
+
+        val pipedIn = PipedInputStream(65536)
+        val pipedOut = PipedOutputStream(pipedIn)
+
+        // Zip in a background thread so NanoHTTPd can stream the response
+        Thread {
+            try {
+                ZipOutputStream(pipedOut).use { zip ->
+                    val basePath = dir.absolutePath
+                    addDirToZip(zip, dir, basePath)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error creating zip for $dirParam", e)
+            } finally {
+                try { pipedOut.close() } catch (_: Exception) {}
+            }
+        }.start()
+
+        val zipName = "${dir.name}.zip"
+        val response = newChunkedResponse(Response.Status.OK, "application/zip", pipedIn)
+        response.addHeader("Content-Disposition", "attachment; filename=\"$zipName\"")
+        return response
+    }
+
+    private fun addDirToZip(zip: ZipOutputStream, dir: File, basePath: String) {
+        val entries = dir.listFiles() ?: return
+        for (entry in entries) {
+            if (entry.name.startsWith(".")) continue
+            val relativePath = entry.absolutePath.removePrefix(basePath).trimStart('/')
+            if (entry.isDirectory) {
+                addDirToZip(zip, entry, basePath)
+            } else if (entry.isFile && MediaBrowser.isMediaFile(entry.name)) {
+                try {
+                    zip.putNextEntry(ZipEntry(relativePath))
+                    FileInputStream(entry).use { fis ->
+                        fis.copyTo(zip, 8192)
+                    }
+                    zip.closeEntry()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Skipping file in zip: ${entry.name}", e)
+                }
+            }
+        }
     }
 
     // ─── API: Quality toggle ──────────────────────────────────────────────────
