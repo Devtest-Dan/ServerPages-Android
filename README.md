@@ -9,7 +9,9 @@ Unattended screen broadcaster + media server for Android. Turns any phone into a
 - **4-digit access code** — viewers must enter a code to watch the stream
 - **Admin monitor** — unauthenticated stream + media browser at `/admin` for the device owner
 - **Live viewer counter** — real-time viewer count on the app and admin page
+- **Content Mode** — play media files full-screen for viewers when phone is unattended
 - **Media browser** — browse DCIM, Pictures, Videos, Music, Downloads (admin only)
+- **Folder download** — download entire folders as zip (admin only)
 - **Embedded HTTP server** — NanoHTTPd on port 3333, no external dependencies
 - **Tailscale integration** — auto-launches Tailscale, detects tailnet IP, shows URL in notification + admin page
 - **Quality toggle** — switch 720p/1080p from the browser
@@ -82,6 +84,23 @@ The app shows a live count of how many viewers are currently watching. A viewer 
 
 **Note:** For 10+ viewers, use the Windows version of ServerPages on a computer. A phone's network and CPU are not designed for high concurrent viewer counts.
 
+## Content Mode
+
+When the phone is left unattended, the screen turns off and viewers see a black stream. **Content Mode** solves this by playing media files full-screen with the screen kept on.
+
+Tap **Content Mode** on the app screen to start. The phone will:
+
+1. Keep the screen on permanently (`FLAG_KEEP_SCREEN_ON`)
+2. Go full-screen immersive (landscape, no status/nav bars)
+3. Cycle through all images and videos from DCIM, Pictures, Movies, Downloads
+4. Images display for 8 seconds, videos play to completion
+5. Playlist is shuffled and loops forever
+6. Audio-only files are skipped (nothing visual to capture)
+
+MediaProjection captures the full-screen content and streams it to viewers via HLS.
+
+**Tap anywhere** on the screen to exit Content Mode and return to the app.
+
 ## Daily Use
 
 **Zero interaction.** The phone streams and serves files 24/7.
@@ -126,6 +145,7 @@ This single tap per reboot is the **only human interaction** — Android does no
 | `/admin/api/files?dir=...` | GET | Directory listing (JSON) |
 | `/admin/api/stream?path=...` | GET | File streaming (Range/206 support) |
 | `/admin/api/download?path=...` | GET | File download |
+| `/admin/api/download-folder?dir=...` | GET | Download folder as zip |
 
 ### Protected (requires access code)
 
@@ -155,6 +175,8 @@ BootReceiver (BOOT_COMPLETED)
 │   ├── ScreenCapture (MediaProjection → VirtualDisplay → MediaCodec → HlsWriter)
 │   │   └── HlsWriter (standalone MP4 segments + m3u8 manifest)
 │   └── Tailscale (auto-detect, auto-launch, IP discovery)
+├── ContentPlayerActivity (full-screen media playback, keeps screen on)
+│   └── Cycles images (8s) + videos (to completion), shuffled, looping
 └── Notification → tap → MainActivity → MediaProjection permission → back to background
 ```
 
