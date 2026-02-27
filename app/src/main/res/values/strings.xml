@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ServerPages</string>
+    <string name="notification_channel_name">ServerPages Service</string>
+    <string name="notification_channel_description">Screen capture and media server</string>
+</resources>

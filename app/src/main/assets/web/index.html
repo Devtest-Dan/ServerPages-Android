@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServerPages</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="header">
+    <h1>ServerPages</h1>
+    <span class="status-dot" id="statusDot"></span>
+    <nav>
+      <a href="/" class="active">Dashboard</a>
+      <a href="/live.html">Live</a>
+      <a href="/media.html">Media</a>
+    </nav>
+  </div>
+
+  <div class="container">
+    <div class="dashboard-grid">
+      <!-- Live Stream Card -->
+      <a href="/live.html" class="card card-link">
+        <div class="card-header">
+          <span class="live-badge" id="liveBadge" style="display:none">LIVE</span>
+          <h2>Screen Stream</h2>
+        </div>
+        <div class="card-body">
+          <div class="player-wrapper">
+            <video id="preview" muted autoplay playsinline></video>
+            <div class="player-overlay" id="previewOverlay">
+              Connecting to stream...
+            </div>
+          </div>
+        </div>
+      </a>
+
+      <!-- Media Browser Card -->
+      <a href="/media.html" class="card card-link">
+        <div class="card-header">
+          <h2>Media Browser</h2>
+        </div>
+        <div class="card-body">
+          <p style="color: var(--text-muted); margin-bottom: 16px;">
+            Browse and play media files on this device.
+          </p>
+          <div class="drive-selector" onclick="event.preventDefault()">
+            <a href="/media.html?dir=DCIM" class="drive-btn">DCIM</a>
+            <a href="/media.html?dir=Pictures" class="drive-btn">Pictures</a>
+            <a href="/media.html?dir=Videos" class="drive-btn">Videos</a>
+            <a href="/media.html?dir=Music" class="drive-btn">Music</a>
+            <a href="/media.html?dir=Downloads" class="drive-btn">Downloads</a>
+          </div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <script>
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const dot = document.getElementById('statusDot');
+        const badge = document.getElementById('liveBadge');
+
+        if (data.streamReady) {
+          dot.classList.add('live');
+          badge.style.display = '';
+          initPreview();
+        } else {
+          dot.classList.remove('live');
+          badge.style.display = 'none';
+        }
+      } catch (e) {}
+    }
+
+    let previewInit = false;
+    function initPreview() {
+      if (previewInit) return;
+      previewInit = true;
+      const video = document.getElementById('preview');
+      const overlay = document.getElementById('previewOverlay');
+
+      if (Hls.isSupported()) {
+        const hls = new Hls({ liveDurationInfinity: true, enableWorker: true });
+        hls.loadSource('/hls/screen.m3u8');
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          overlay.classList.add('hidden');
+          video.play().catch(() => {});
+        });
+        hls.on(Hls.Events.ERROR, (e, data) => {
+          if (data.fatal) {
+            previewInit = false;
+            overlay.classList.remove('hidden');
+            overlay.textContent = 'Stream offline — retrying...';
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = '/hls/screen.m3u8';
+        video.addEventListener('loadedmetadata', () => {
+          overlay.classList.add('hidden');
+          video.play().catch(() => {});
+        });
+      }
+    }
+
+    checkStatus();
+    setInterval(checkStatus, 5000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Stream — ServerPages</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .live-container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .live-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .live-header h2 { font-size: 20px; }
+    .player-wrapper {
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .stream-info {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-size: 13px;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+    .quality-toggle {
+      margin-left: auto;
+      display: flex;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .quality-btn {
+      padding: 4px 12px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .quality-btn:hover { color: var(--text); }
+    .quality-btn.active {
+      background: var(--accent);
+      color: #000;
+    }
+    .quality-btn:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>ServerPages</h1>
+    <span class="status-dot" id="statusDot"></span>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/live.html" class="active">Live</a>
+      <a href="/media.html">Media</a>
+    </nav>
+  </div>
+
+  <div class="live-container">
+    <div class="live-header">
+      <span class="live-badge" id="liveBadge" style="display:none">LIVE</span>
+      <h2>Screen Stream</h2>
+    </div>
+
+    <div class="player-wrapper">
+      <video id="player" autoplay playsinline controls></video>
+      <div class="player-overlay" id="overlay">
+        Waiting for stream...
+      </div>
+    </div>
+
+    <div class="stream-info">
+      <span id="resolution">—</span>
+      <span id="uptime">—</span>
+      <span id="status">Connecting...</span>
+      <div class="quality-toggle">
+        <button class="quality-btn" data-quality="720p" onclick="setQuality('720p')">720p</button>
+        <button class="quality-btn" data-quality="1080p" onclick="setQuality('1080p')">1080p</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <script>
+    const video = document.getElementById('player');
+    const overlay = document.getElementById('overlay');
+    const statusDot = document.getElementById('statusDot');
+    const liveBadge = document.getElementById('liveBadge');
+    const statusText = document.getElementById('status');
+    const resText = document.getElementById('resolution');
+    let hls = null;
+    let retryTimeout = null;
+
+    function startStream() {
+      if (hls) { hls.destroy(); hls = null; }
+
+      if (Hls.isSupported()) {
+        hls = new Hls({
+          liveDurationInfinity: true,
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 0
+        });
+
+        hls.loadSource('/hls/screen.m3u8');
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          overlay.classList.add('hidden');
+          statusDot.classList.add('live');
+          liveBadge.style.display = '';
+          statusText.textContent = 'Streaming';
+          video.play().catch(() => {});
+        });
+
+        hls.on(Hls.Events.ERROR, (e, data) => {
+          if (data.fatal) {
+            hls.destroy();
+            hls = null;
+            streamOffline();
+          }
+        });
+
+        hls.on(Hls.Events.LEVEL_LOADED, () => {
+          if (video.videoWidth) {
+            resText.textContent = `${video.videoWidth}x${video.videoHeight}`;
+          }
+        });
+
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = '/hls/screen.m3u8';
+        video.addEventListener('loadedmetadata', () => {
+          overlay.classList.add('hidden');
+          statusDot.classList.add('live');
+          liveBadge.style.display = '';
+          statusText.textContent = 'Streaming';
+          video.play().catch(() => {});
+        });
+        video.addEventListener('error', streamOffline);
+      }
+    }
+
+    function streamOffline() {
+      overlay.classList.remove('hidden');
+      overlay.textContent = 'Stream offline — retrying in 5s...';
+      statusDot.classList.remove('live');
+      liveBadge.style.display = 'none';
+      statusText.textContent = 'Reconnecting...';
+      clearTimeout(retryTimeout);
+      retryTimeout = setTimeout(startStream, 5000);
+    }
+
+    async function updateStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        if (data.uptime) {
+          const mins = Math.floor(data.uptime / 60);
+          const hrs = Math.floor(mins / 60);
+          document.getElementById('uptime').textContent =
+            hrs > 0 ? `Uptime: ${hrs}h ${mins % 60}m` : `Uptime: ${mins}m`;
+        }
+        if (data.quality) updateQualityButtons(data.quality);
+        if (data.streamReady && !hls && !video.src) {
+          startStream();
+        }
+      } catch (e) {}
+    }
+
+    function updateQualityButtons(quality) {
+      document.querySelectorAll('.quality-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.quality === quality);
+      });
+    }
+
+    async function setQuality(quality) {
+      const btns = document.querySelectorAll('.quality-btn');
+      btns.forEach(b => b.disabled = true);
+
+      try {
+        const res = await fetch('/api/quality', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quality })
+        });
+        const data = await res.json();
+        updateQualityButtons(data.quality);
+
+        if (data.changed) {
+          overlay.classList.remove('hidden');
+          overlay.textContent = `Switching to ${quality}...`;
+          statusText.textContent = 'Switching quality...';
+          setTimeout(startStream, 4000);
+        }
+      } catch (e) {}
+
+      btns.forEach(b => b.disabled = false);
+    }
+
+    startStream();
+    setInterval(updateStatus, 10000);
+  </script>
+</body>
+</html>
