@@ -258,7 +258,7 @@ class WebServer(
             ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing path"))
 
         val file = File(filePath)
-        if (!MediaBrowser.isPathAllowed(filePath) || !MediaBrowser.isMediaFile(file.name)) {
+        if (!MediaBrowser.isPathAllowed(filePath)) {
             return jsonResponse(Response.Status.FORBIDDEN, mapOf("error" to "Access denied"))
         }
         if (!file.exists()) {
@@ -317,7 +317,7 @@ class WebServer(
             ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing path"))
 
         val file = File(filePath)
-        if (!MediaBrowser.isPathAllowed(filePath) || !MediaBrowser.isMediaFile(file.name)) {
+        if (!MediaBrowser.isPathAllowed(filePath)) {
             return jsonResponse(Response.Status.FORBIDDEN, mapOf("error" to "Access denied"))
         }
         if (!file.exists()) {
@@ -374,7 +374,7 @@ class WebServer(
             val relativePath = entry.absolutePath.removePrefix(basePath).trimStart('/')
             if (entry.isDirectory) {
                 addDirToZip(zip, entry, basePath)
-            } else if (entry.isFile && MediaBrowser.isMediaFile(entry.name)) {
+            } else if (entry.isFile) {
                 try {
                     zip.putNextEntry(ZipEntry(relativePath))
                     FileInputStream(entry).use { fis ->

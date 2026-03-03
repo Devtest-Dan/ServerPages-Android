@@ -28,6 +28,7 @@
     }
     .back-link:hover { text-decoration: underline; }
     .file-icon.image { background: #3d1b3d; color: #ce93d8; }
+    .file-icon.file { background: #2a2a2a; color: #999; }
     .thumb-preview {
       width: 32px;
       height: 32px;
@@ -227,14 +228,17 @@
 
         // Files
         for (const f of data.files) {
-          const icons = { video: '&#127909;', audio: '&#127925;', image: '&#128247;' };
+          const icons = { video: '&#127909;', audio: '&#127925;', image: '&#128247;', file: '&#128196;' };
           const icon = icons[f.type] || '&#128196;';
           const iconClass = f.type;
           const iconHtml = f.type === 'image'
             ? `<img class="thumb-preview" src="${API_PREFIX}/api/stream?path=${encodeURIComponent(f.path)}" loading="lazy" alt="">`
             : `<div class="file-icon ${iconClass}">${icon}</div>`;
+          const clickAction = (f.type === 'file')
+            ? `window.location.href='${API_PREFIX}/api/download?path=${encodeURIComponent(f.path)}'`
+            : `playFile('${escapeAttr(f.path)}', '${f.type}', '${escapeAttr(f.name)}')`;
           html += `
-            <div class="file-item" onclick="playFile('${escapeAttr(f.path)}', '${f.type}', '${escapeAttr(f.name)}')">
+            <div class="file-item" onclick="${clickAction}">
               ${iconHtml}
               <div class="file-info">
                 <div class="file-name">${escapeHtml(f.name)}</div>

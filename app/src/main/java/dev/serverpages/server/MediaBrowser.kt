@@ -91,7 +91,7 @@ object MediaBrowser {
             in VIDEO_EXTS -> "video"
             in IMAGE_EXTS -> "image"
             in AUDIO_EXTS -> "audio"
-            else -> "unknown"
+            else -> "file"
         }
     }
 
@@ -134,7 +134,7 @@ object MediaBrowser {
 
                 if (entry.isDirectory) {
                     dirs.add(DirEntry(entry.name, entry.absolutePath, "directory"))
-                } else if (entry.isFile && isMediaFile(entry.name)) {
+                } else if (entry.isFile) {
                     files.add(
                         FileEntry(
                             name = entry.name,
