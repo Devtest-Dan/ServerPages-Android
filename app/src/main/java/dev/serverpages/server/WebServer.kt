@@ -17,8 +17,9 @@ import java.util.zip.ZipOutputStream
 /**
  * Embedded HTTP server on port 3333.
  *
- * Auth: 4-digit code → cookie session. Admin path bypasses auth.
+ * Auth: 4-digit code (10 unique codes) -> cookie session. Admin path bypasses auth.
  * Viewer tracking: counts unique IPs fetching /hls/screen.m3u8 (excludes admin).
+ * Chat: 1-to-many private conversations (viewer <-> streamer only).
  */
 @Suppress("DEPRECATION")
 class WebServer(
@@ -43,12 +44,17 @@ class WebServer(
     var getCurrentQuality: (() -> String)? = null
     var getCameraFacing: (() -> String)? = null
     var getTailscaleUrl: (() -> String)? = null
+    var getPublicUrl: (() -> String)? = null
 
-    // Auth
-    var accessCode: String = "0000"
+    // Multi-code auth
+    var accessCodes: List<CodeInfo> = emptyList()
+    private val tokenToCode = ConcurrentHashMap<String, CodeInfo>()
     private val validTokens = ConcurrentHashMap.newKeySet<String>()
 
-    // Viewer tracking: IP → last seen timestamp
+    // Chat: code -> messages
+    val conversations = ConcurrentHashMap<String, MutableList<ChatMessage>>()
+
+    // Viewer tracking: IP -> last seen timestamp
     private val viewers = ConcurrentHashMap<String, Long>()
 
     fun getViewerCount(): Int {
@@ -64,7 +70,7 @@ class WebServer(
 
         return try {
             when {
-                // ─── Public routes (no auth) ─────────────────────────────
+                // --- Public routes (no auth) ---
                 uri == "/login" || uri == "/login.html" ->
                     serveAsset("web/login.html", "text/html")
                 uri == "/style.css" ->
@@ -72,11 +78,13 @@ class WebServer(
                 uri == "/api/auth" && method == Method.POST ->
                     handleAuth(session)
 
-                // ─── Admin routes (no auth, excluded from viewer count) ──
+                // --- Admin routes (no auth, excluded from viewer count) ---
                 uri == "/admin" || uri == "/admin/" || uri == "/admin/live.html" ->
                     serveAsset("web/admin.html", "text/html")
                 uri == "/admin/media.html" ->
                     serveAsset("web/media.html", "text/html")
+                uri == "/admin/preview.html" ->
+                    serveAsset("web/preview.html", "text/html")
                 uri.startsWith("/admin/hls/") ->
                     handleHls(uri.removePrefix("/admin/hls/"))
                 uri == "/admin/api/status" ->
@@ -92,11 +100,19 @@ class WebServer(
                 uri == "/admin/api/download-folder" && method == Method.GET ->
                     handleDownloadFolder(session)
 
-                // ─── Everything else requires auth ───────────────────────
+                // --- Admin chat APIs (no auth) ---
+                uri == "/admin/api/codes" && method == Method.GET ->
+                    handleAdminCodes()
+                uri == "/admin/api/conversations" && method == Method.GET ->
+                    handleAdminConversations()
+                uri == "/admin/api/chat/messages" && method == Method.GET ->
+                    handleAdminChatMessages(session)
+                uri == "/admin/api/chat/send" && method == Method.POST ->
+                    handleAdminChatSend(session)
+
+                // --- Everything else requires auth ---
                 else -> {
                     if (!isAuthenticated(session)) {
-                        // For API/HLS requests return 401 so hls.js handles it as error
-                        // For page requests redirect to login
                         return if (uri.startsWith("/hls/") || uri.startsWith("/api/")) {
                             newFixedLengthResponse(
                                 Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized"
@@ -111,9 +127,14 @@ class WebServer(
                         uri == "/api/quality" && method == Method.POST -> handleQuality(session)
                         uri == "/api/camera" && method == Method.POST -> handleCameraSwitch()
 
+                        // Viewer chat APIs
+                        uri == "/api/chat/send" && method == Method.POST ->
+                            handleViewerChatSend(session)
+                        uri == "/api/chat/messages" && method == Method.GET ->
+                            handleViewerChatMessages(session)
+
                         uri.startsWith("/hls/") -> {
                             val fileName = uri.removePrefix("/hls/")
-                            // Track viewer on manifest request
                             if (fileName == "screen.m3u8") {
                                 viewers[clientIp] = System.currentTimeMillis()
                             }
@@ -137,32 +158,36 @@ class WebServer(
         }
     }
 
-    // ─── Auth ─────────────────────────────────────────────────────────────────
+    // --- Auth ---
 
-    private fun isAuthenticated(session: IHTTPSession): Boolean {
-        // Try NanoHTTPd's cookie parser first
+    private fun getTokenFromSession(session: IHTTPSession): String? {
         val cookies = session.cookies
         val token = cookies?.read(SESSION_COOKIE)
-        if (token != null && validTokens.contains(token)) return true
+        if (token != null && validTokens.contains(token)) return token
 
-        // Fallback: parse Cookie header manually (NanoHTTPd can miss cookies)
-        val cookieHeader = session.headers["cookie"] ?: return false
+        val cookieHeader = session.headers["cookie"] ?: return null
         val manualToken = cookieHeader.split(";")
             .map { it.trim() }
             .firstOrNull { it.startsWith("$SESSION_COOKIE=") }
             ?.substringAfter("=")
-        return manualToken != null && validTokens.contains(manualToken)
+        return if (manualToken != null && validTokens.contains(manualToken)) manualToken else null
+    }
+
+    private fun isAuthenticated(session: IHTTPSession): Boolean {
+        return getTokenFromSession(session) != null
+    }
+
+    private fun getCodeForSession(session: IHTTPSession): CodeInfo? {
+        val token = getTokenFromSession(session) ?: return null
+        return tokenToCode[token]
     }
 
     private fun handleAuth(session: IHTTPSession): Response {
-        // Read raw body — NanoHTTPd parseBody can miss JSON with application/json content type
         val body = HashMap<String, String>()
         try { session.parseBody(body) } catch (_: Exception) {}
 
-        // Try multiple sources: postData (form), then raw body content
         val postData = body["postData"] ?: body["content"] ?: ""
 
-        // Also try reading from parms if NanoHTTPd parsed it differently
         val json = try {
             if (postData.isNotEmpty()) {
                 gson.fromJson(postData, JsonObject::class.java)
@@ -173,9 +198,11 @@ class WebServer(
             ?: session.parms["code"]
             ?: ""
 
-        Log.d(TAG, "Auth attempt — code: '$code', accessCode: '$accessCode', body keys: ${body.keys}, postData: '$postData'")
+        Log.d(TAG, "Auth attempt -- code: '$code', body keys: ${body.keys}")
 
-        if (code != accessCode) {
+        // Find matching code from the 10 access codes
+        val codeInfo = accessCodes.find { it.code == code }
+        if (codeInfo == null) {
             return jsonResponse(
                 Response.Status.FORBIDDEN,
                 mapOf("error" to "Invalid code")
@@ -185,19 +212,21 @@ class WebServer(
         // Generate session token
         val token = java.util.UUID.randomUUID().toString()
         validTokens.add(token)
+        codeInfo.token = token
+        tokenToCode[token] = codeInfo
+
+        // Initialize conversation if not exists
+        conversations.putIfAbsent(code, mutableListOf())
 
         val response = jsonResponse(
             Response.Status.OK,
             mapOf("ok" to true)
         )
-        // Use SameSite=Lax for broader compatibility over HTTP
         response.addHeader("Set-Cookie", "$SESSION_COOKIE=$token; Path=/; HttpOnly; SameSite=Lax")
         return response
     }
 
     private fun redirectToLogin(): Response {
-        // Use 302 (temporary) NOT 301 — browsers cache 301 permanently
-        // which breaks login flow after auth cookie is set
         val response = newFixedLengthResponse(
             Response.Status.REDIRECT_SEE_OTHER,
             MIME_HTML,
@@ -208,7 +237,127 @@ class WebServer(
         return response
     }
 
-    // ─── API: Status ──────────────────────────────────────────────────────────
+    // --- Viewer Chat APIs ---
+
+    private fun handleViewerChatSend(session: IHTTPSession): Response {
+        val codeInfo = getCodeForSession(session)
+            ?: return jsonResponse(Response.Status.UNAUTHORIZED, mapOf("error" to "No session"))
+
+        val body = HashMap<String, String>()
+        try { session.parseBody(body) } catch (_: Exception) {}
+        val postData = body["postData"] ?: body["content"] ?: ""
+        val json = try { gson.fromJson(postData, JsonObject::class.java) } catch (_: Exception) { null }
+        val text = json?.get("text")?.asString?.trim()
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing text"))
+
+        if (text.isEmpty() || text.length > 1000) {
+            return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Invalid message"))
+        }
+
+        val msg = ChatMessage(from = "viewer", text = text)
+        conversations.getOrPut(codeInfo.code) { mutableListOf() }.add(msg)
+        Log.d(TAG, "Chat [${codeInfo.code}] viewer: $text")
+
+        return jsonResponse(Response.Status.OK, mapOf("ok" to true, "time" to msg.time))
+    }
+
+    private fun handleViewerChatMessages(session: IHTTPSession): Response {
+        val codeInfo = getCodeForSession(session)
+            ?: return jsonResponse(Response.Status.UNAUTHORIZED, mapOf("error" to "No session"))
+
+        val sinceParam = session.parms["since"]?.toLongOrNull() ?: 0L
+        val messages = conversations[codeInfo.code]
+            ?.filter { it.time > sinceParam }
+            ?.map { mapOf("from" to it.from, "text" to it.text, "time" to it.time) }
+            ?: emptyList()
+
+        return jsonResponse(Response.Status.OK, mapOf("messages" to messages, "code" to codeInfo.code))
+    }
+
+    // --- Admin Chat APIs ---
+
+    private fun handleAdminCodes(): Response {
+        val codes = accessCodes.map { ci ->
+            mapOf(
+                "code" to ci.code,
+                "label" to ci.label,
+                "connected" to ci.isConnected
+            )
+        }
+        return jsonResponse(Response.Status.OK, mapOf("codes" to codes))
+    }
+
+    private fun handleAdminConversations(): Response {
+        val convos = accessCodes.mapNotNull { ci ->
+            val msgs = conversations[ci.code]
+            if (msgs == null || msgs.isEmpty()) {
+                // Still show connected codes even with no messages
+                if (ci.isConnected) {
+                    mapOf(
+                        "code" to ci.code,
+                        "label" to ci.label,
+                        "connected" to true,
+                        "lastMessage" to "",
+                        "lastTime" to 0L,
+                        "messageCount" to 0
+                    )
+                } else null
+            } else {
+                val last = msgs.last()
+                mapOf(
+                    "code" to ci.code,
+                    "label" to ci.label,
+                    "connected" to ci.isConnected,
+                    "lastMessage" to last.text,
+                    "lastTime" to last.time,
+                    "messageCount" to msgs.size
+                )
+            }
+        }
+        return jsonResponse(Response.Status.OK, mapOf("conversations" to convos))
+    }
+
+    private fun handleAdminChatMessages(session: IHTTPSession): Response {
+        val code = session.parms["code"]
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing code"))
+        val sinceParam = session.parms["since"]?.toLongOrNull() ?: 0L
+
+        val messages = conversations[code]
+            ?.filter { it.time > sinceParam }
+            ?.map { mapOf("from" to it.from, "text" to it.text, "time" to it.time) }
+            ?: emptyList()
+
+        return jsonResponse(Response.Status.OK, mapOf("messages" to messages))
+    }
+
+    private fun handleAdminChatSend(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        try { session.parseBody(body) } catch (_: Exception) {}
+        val postData = body["postData"] ?: body["content"] ?: ""
+        val json = try { gson.fromJson(postData, JsonObject::class.java) } catch (_: Exception) { null }
+
+        val code = json?.get("code")?.asString
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing code"))
+        val text = json.get("text")?.asString?.trim()
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing text"))
+
+        if (text.isEmpty() || text.length > 1000) {
+            return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Invalid message"))
+        }
+
+        // Verify code exists
+        if (accessCodes.none { it.code == code }) {
+            return jsonResponse(Response.Status.NOT_FOUND, mapOf("error" to "Unknown code"))
+        }
+
+        val msg = ChatMessage(from = "streamer", text = text)
+        conversations.getOrPut(code) { mutableListOf() }.add(msg)
+        Log.d(TAG, "Chat [$code] streamer: $text")
+
+        return jsonResponse(Response.Status.OK, mapOf("ok" to true, "time" to msg.time))
+    }
+
+    // --- API: Status ---
 
     private fun handleStatus(): Response {
         val capturing = getCaptureState?.invoke() ?: false
@@ -218,6 +367,7 @@ class WebServer(
 
         val tailscale = getTailscaleUrl?.invoke() ?: ""
         val camera = getCameraFacing?.invoke() ?: "back"
+        val publicUrlValue = getPublicUrl?.invoke() ?: ""
 
         return jsonResponse(
             Response.Status.OK, mapOf(
@@ -227,12 +377,13 @@ class WebServer(
                 "quality" to quality,
                 "camera" to camera,
                 "viewers" to getViewerCount(),
-                "tailscaleUrl" to tailscale
+                "tailscaleUrl" to tailscale,
+                "publicUrl" to publicUrlValue
             )
         )
     }
 
-    // ─── API: Files ───────────────────────────────────────────────────────────
+    // --- API: Files ---
 
     private fun handleFiles(session: IHTTPSession): Response {
         val dirParam = session.parms["dir"] ?: return jsonResponse(
@@ -258,7 +409,7 @@ class WebServer(
         }
     }
 
-    // ─── API: Stream (with Range support) ─────────────────────────────────────
+    // --- API: Stream (with Range support) ---
 
     private fun handleStream(session: IHTTPSession): Response {
         val filePath = session.parms["path"]
@@ -317,7 +468,7 @@ class WebServer(
         return response
     }
 
-    // ─── API: Download ────────────────────────────────────────────────────────
+    // --- API: Download ---
 
     private fun handleDownload(session: IHTTPSession): Response {
         val filePath = session.parms["path"]
@@ -337,7 +488,7 @@ class WebServer(
         return response
     }
 
-    // ─── API: Download Folder (zip) ────────────────────────────────────────────
+    // --- API: Download Folder (zip) ---
 
     private fun handleDownloadFolder(session: IHTTPSession): Response {
         val dirParam = session.parms["dir"]
@@ -354,7 +505,6 @@ class WebServer(
         val pipedIn = PipedInputStream(65536)
         val pipedOut = PipedOutputStream(pipedIn)
 
-        // Zip in a background thread so NanoHTTPd can stream the response
         Thread {
             try {
                 ZipOutputStream(pipedOut).use { zip ->
@@ -395,7 +545,7 @@ class WebServer(
         }
     }
 
-    // ─── API: Quality toggle ──────────────────────────────────────────────────
+    // --- API: Quality toggle ---
 
     private fun handleQuality(session: IHTTPSession): Response {
         val body = HashMap<String, String>()
@@ -422,7 +572,7 @@ class WebServer(
         return jsonResponse(Response.Status.OK, mapOf("quality" to quality, "changed" to changed))
     }
 
-    // ─── API: Camera switch ─────────────────────────────────────────────────
+    // --- API: Camera switch ---
 
     private fun handleCameraSwitch(): Response {
         val switched = onCameraSwitch?.invoke() ?: false
@@ -430,7 +580,7 @@ class WebServer(
         return jsonResponse(Response.Status.OK, mapOf("camera" to camera, "switched" to switched))
     }
 
-    // ─── HLS segment serving ──────────────────────────────────────────────────
+    // --- HLS segment serving ---
 
     private fun handleHls(fileName: String): Response {
         val file = File(hlsDir, fileName)
@@ -452,7 +602,7 @@ class WebServer(
         return response
     }
 
-    // ─── Static asset serving ─────────────────────────────────────────────────
+    // --- Static asset serving ---
 
     private fun serveAsset(assetPath: String, mimeType: String): Response {
         return try {
@@ -465,7 +615,7 @@ class WebServer(
         }
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
+    // --- Helpers ---
 
     private fun jsonResponse(status: Response.Status, data: Any): Response {
         val json = gson.toJson(data)

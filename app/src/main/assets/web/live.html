@@ -60,6 +60,97 @@
       opacity: 0.5;
       cursor: wait;
     }
+
+    /* ─── Chat ───────────────────────────────── */
+    .chat-toggle-btn {
+      margin-top: 16px;
+      padding: 8px 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .chat-toggle-btn:hover { background: #222; }
+    .chat-panel {
+      display: none;
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #111;
+      overflow: hidden;
+    }
+    .chat-panel.open { display: block; }
+    .chat-messages {
+      height: 300px;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chat-empty {
+      color: #555;
+      text-align: center;
+      padding: 48px 0;
+      font-size: 14px;
+    }
+    .chat-bubble {
+      max-width: 70%;
+      padding: 8px 12px;
+      border-radius: 16px;
+      font-size: 14px;
+      color: #fff;
+      word-break: break-word;
+    }
+    .chat-bubble.viewer {
+      background: #1565C0;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+    .chat-bubble.streamer {
+      background: #2E2E2E;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+    .chat-bubble .time {
+      font-size: 10px;
+      color: #999;
+      text-align: right;
+      margin-top: 2px;
+    }
+    .chat-input-bar {
+      display: flex;
+      padding: 8px;
+      gap: 8px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .chat-input-bar input {
+      flex: 1;
+      padding: 8px 14px;
+      border: 1px solid #333;
+      border-radius: 20px;
+      background: #0d0d0d;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .chat-input-bar input:focus { border-color: var(--accent); }
+    .chat-input-bar button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 20px;
+      background: var(--accent);
+      color: #000;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chat-input-bar button:hover { opacity: 0.9; }
   </style>
 </head>
 <body>
@@ -90,10 +181,25 @@
       <span id="resolution">—</span>
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
+      <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600; font-size: 12px;"></span>
       <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
       <div class="quality-toggle">
         <button class="quality-btn" data-quality="720p" onclick="setQuality('720p')">720p</button>
         <button class="quality-btn" data-quality="1080p" onclick="setQuality('1080p')">1080p</button>
+      </div>
+    </div>
+
+    <!-- Chat Section -->
+    <button class="chat-toggle-btn" id="chatToggle" onclick="toggleChat()">Chat</button>
+
+    <div class="chat-panel" id="chatPanel">
+      <div class="chat-messages" id="chatMessages">
+        <div class="chat-empty">No messages yet — say hi!</div>
+      </div>
+      <div class="chat-input-bar">
+        <input type="text" id="chatInput" placeholder="Type a message..." maxlength="1000"
+               onkeydown="if(event.key==='Enter')sendChat()">
+        <button onclick="sendChat()">Send</button>
       </div>
     </div>
   </div>
@@ -130,7 +236,6 @@
         hls.loadSource('/hls/screen.m3u8');
         hls.attachMedia(video);
 
-        // Timeout: if no playback within 15s, retry
         startTimeout = setTimeout(() => {
           if (video.paused || video.readyState < 2) {
             if (hls) { hls.destroy(); hls = null; }
@@ -175,14 +280,22 @@
       }
     }
 
+    let streamerStopped = false;
+
     function streamOffline() {
       overlay.classList.remove('hidden');
-      overlay.textContent = 'Stream offline — retrying in 5s...';
       statusDot.classList.remove('live');
       liveBadge.style.display = 'none';
-      statusText.textContent = 'Reconnecting...';
-      clearTimeout(retryTimeout);
-      retryTimeout = setTimeout(startStream, 5000);
+      if (streamerStopped) {
+        overlay.textContent = 'Stream stopped by streamer';
+        statusText.textContent = 'Stopped';
+        clearTimeout(retryTimeout);
+      } else {
+        overlay.textContent = 'Stream offline — retrying in 5s...';
+        statusText.textContent = 'Reconnecting...';
+        clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(startStream, 5000);
+      }
     }
 
     async function updateStatus() {
@@ -198,6 +311,18 @@
         if (data.quality) updateQualityButtons(data.quality);
         if (data.camera) {
           document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+        }
+        const pubEl = document.getElementById('publicUrlInfo');
+        if (data.publicUrl) {
+          pubEl.innerHTML = 'Share: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>';
+          pubEl.style.display = '';
+        }
+        if (data.capturing === false) {
+          streamerStopped = true;
+          if (hls) { hls.destroy(); hls = null; }
+          streamOffline();
+        } else if (data.capturing === true && streamerStopped) {
+          streamerStopped = false;
         }
         if (data.streamReady && !hls && !video.src) {
           startStream();
@@ -246,8 +371,80 @@
       btn.disabled = false;
     }
 
+    // ─── Chat ─────────────────────────────────────
+    let chatOpen = false;
+    let chatPollTimer = null;
+    let lastChatTime = 0;
+
+    function toggleChat() {
+      chatOpen = !chatOpen;
+      const panel = document.getElementById('chatPanel');
+      const btn = document.getElementById('chatToggle');
+      panel.classList.toggle('open', chatOpen);
+      btn.textContent = chatOpen ? 'Hide Chat' : 'Chat';
+
+      if (chatOpen) {
+        loadChat();
+        chatPollTimer = setInterval(loadChat, 3000);
+      } else {
+        clearInterval(chatPollTimer);
+        chatPollTimer = null;
+      }
+    }
+
+    async function loadChat() {
+      try {
+        const res = await fetch('/api/chat/messages?since=' + lastChatTime);
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('chatMessages');
+
+        if (data.messages && data.messages.length > 0) {
+          // Remove empty state
+          const empty = container.querySelector('.chat-empty');
+          if (empty) empty.remove();
+
+          data.messages.forEach(msg => {
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble ' + msg.from;
+            const t = new Date(msg.time);
+            const timeStr = t.getHours().toString().padStart(2,'0') + ':' + t.getMinutes().toString().padStart(2,'0');
+            bubble.innerHTML = escapeHtml(msg.text) + '<div class="time">' + timeStr + '</div>';
+            container.appendChild(bubble);
+            if (msg.time > lastChatTime) lastChatTime = msg.time;
+          });
+
+          container.scrollTop = container.scrollHeight;
+        }
+      } catch (e) {}
+    }
+
+    async function sendChat() {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+
+      try {
+        await fetch('/api/chat/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        // Immediately refresh
+        await loadChat();
+      } catch (e) {}
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     startStream();
-    setInterval(updateStatus, 10000);
+    updateStatus();
+    setInterval(updateStatus, 5000);
   </script>
 </body>
 </html>

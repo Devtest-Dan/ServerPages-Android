@@ -100,24 +100,40 @@ class MainActivity : ComponentActivity() {
             ) {
                 val viewModel: MainViewModel = viewModel()
                 val state by viewModel.state.collectAsState()
+                val conversations by viewModel.conversations.collectAsState()
+                val chatMessages by viewModel.chatMessages.collectAsState()
+                val selectedCode by viewModel.selectedCode.collectAsState()
                 this@MainActivity.viewModel = viewModel
 
                 LaunchedEffect(Unit) {
-                    // Determine initial setup step
                     viewModel.setSetupStep(getInitialSetupStep())
                     while (true) {
                         viewModel.refreshState()
+                        viewModel.refreshChat()
                         delay(1000)
                     }
                 }
 
                 MainScreen(
                     state = state,
+                    conversations = conversations,
+                    chatMessages = chatMessages,
+                    selectedCode = selectedCode,
                     onContentMode = {
                         startActivity(Intent(this@MainActivity, ContentPlayerActivity::class.java))
                     },
                     onSetupAction = {
                         handleSetupAction(state.setupStep)
+                    },
+                    onToggleCamera = {
+                        CaptureService.instance?.toggleCapture()
+                        viewModel.refreshState()
+                    },
+                    onSelectConversation = { code ->
+                        viewModel.selectConversation(code)
+                    },
+                    onSendMessage = { text ->
+                        viewModel.sendMessage(text)
                     }
                 )
             }

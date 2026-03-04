@@ -16,7 +16,11 @@ import androidx.lifecycle.LifecycleService
 import dev.serverpages.MainActivity
 import dev.serverpages.capture.QualityPreset
 import dev.serverpages.capture.ScreenCapture
+import dev.serverpages.server.ChatMessage
+import dev.serverpages.server.CodeInfo
+import dev.serverpages.server.ConversationSummary
 import dev.serverpages.server.WebServer
+import dev.serverpages.tunnel.SshTunnel
 import kotlinx.coroutines.*
 import java.io.File
 import java.net.Inet4Address
@@ -52,12 +56,14 @@ class CaptureService : LifecycleService() {
 
     private var webServer: WebServer? = null
     private var screenCapture: ScreenCapture? = null
+    private var sshTunnel: SshTunnel? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
     private var tailscaleHostname: String = ""
-    private var accessCode: String = ""
+    private var publicUrl: String = ""
+    private var accessCodes: List<CodeInfo> = emptyList()
 
     private val hlsDir: File by lazy {
         File(cacheDir, "hls").apply { mkdirs() }
@@ -67,8 +73,8 @@ class CaptureService : LifecycleService() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        accessCode = String.format("%04d", (0..9999).random())
-        Log.i(TAG, "Service created — access code: $accessCode")
+        accessCodes = generateUniqueCodes(10)
+        Log.i(TAG, "Service created — ${accessCodes.size} access codes generated")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -120,6 +126,7 @@ class CaptureService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        stopTunnel()
         stopCapture()
         stopWebServer()
         releaseWifiLock()
@@ -140,15 +147,17 @@ class CaptureService : LifecycleService() {
             getCurrentQuality = { currentQuality.label }
             getCameraFacing = { this@CaptureService.getCameraLabel() }
             getTailscaleUrl = { tailscaleHostname }
+            getPublicUrl = { publicUrl }
             onQualityChange = { label -> changeQuality(label) }
             onCameraSwitch = { switchCamera() }
-            this.accessCode = this@CaptureService.accessCode
+            this.accessCodes = this@CaptureService.accessCodes
         }
 
         try {
             webServer!!.start()
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
+            startTunnel()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start HTTP server", e)
         }
@@ -179,6 +188,20 @@ class CaptureService : LifecycleService() {
         screenCapture = null
     }
 
+    fun toggleCapture() {
+        if (screenCapture?.isCapturing == true) {
+            stopCapture()
+            val ip = getLocalIpAddress()
+            updateNotification("Server on http://$ip:$PORT — camera off")
+            Log.i(TAG, "Camera stopped by user")
+        } else {
+            screenCapture = ScreenCapture(this, hlsDir)
+            screenCapture!!.startCamera(currentQuality, serviceScope)
+            updateNotification(buildLiveNotificationText())
+            Log.i(TAG, "Camera started by user")
+        }
+    }
+
     private fun changeQuality(label: String): Boolean {
         val preset = QualityPreset.fromLabel(label) ?: return false
         if (preset == currentQuality) return false
@@ -196,10 +219,12 @@ class CaptureService : LifecycleService() {
 
     private fun buildLiveNotificationText(): String {
         val ip = getLocalIpAddress()
-        val base = "LIVE on http://$ip:$PORT | Code: $accessCode"
-        return if (tailscaleHostname.isNotEmpty()) {
-            "$base\nTailscale: $tailscaleHostname"
-        } else base
+        val firstCode = accessCodes.firstOrNull()?.code ?: "----"
+        val base = "LIVE on http://$ip:$PORT | Code: $firstCode"
+        val parts = mutableListOf(base)
+        if (publicUrl.isNotEmpty()) parts.add("Public: $publicUrl")
+        if (tailscaleHostname.isNotEmpty()) parts.add("Tailscale: $tailscaleHostname")
+        return parts.joinToString("\n")
     }
 
     fun isCapturing(): Boolean = screenCapture?.isCapturing ?: false
@@ -207,14 +232,80 @@ class CaptureService : LifecycleService() {
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
     fun getTailscaleUrl(): String = tailscaleHostname
-    fun getAccessCode(): String = accessCode
+    fun getPublicUrl(): String = publicUrl
+    fun getAccessCode(): String = accessCodes.firstOrNull()?.code ?: "----"
+    fun getCodes(): List<CodeInfo> = accessCodes
     fun getViewerCount(): Int = webServer?.getViewerCount() ?: 0
     fun getCameraLabel(): String = screenCapture?.getCameraLabel() ?: "back"
+
+    // Chat bridge
+    fun getConversations(): List<ConversationSummary> {
+        val ws = webServer ?: return emptyList()
+        return accessCodes.mapNotNull { ci ->
+            val msgs = ws.conversations[ci.code]
+            if ((msgs == null || msgs.isEmpty()) && !ci.isConnected) return@mapNotNull null
+            val last = msgs?.lastOrNull()
+            ConversationSummary(
+                code = ci.code,
+                label = ci.label,
+                connected = ci.isConnected,
+                lastMessage = last?.text ?: "",
+                lastTime = last?.time ?: 0L,
+                messageCount = msgs?.size ?: 0
+            )
+        }
+    }
+
+    fun getChatMessages(code: String): List<ChatMessage> {
+        return webServer?.conversations?.get(code)?.toList() ?: emptyList()
+    }
+
+    fun sendChatMessage(code: String, text: String) {
+        val ws = webServer ?: return
+        val msg = ChatMessage(from = "streamer", text = text)
+        ws.conversations.getOrPut(code) { mutableListOf() }.add(msg)
+    }
+
+    private fun generateUniqueCodes(count: Int): List<CodeInfo> {
+        val codes = mutableSetOf<String>()
+        while (codes.size < count) {
+            codes.add(String.format("%04d", (0..9999).random()))
+        }
+        return codes.mapIndexed { index, code ->
+            CodeInfo(code = code, label = "Viewer ${index + 1}")
+        }
+    }
+
+    fun setPreviewSurface(surface: android.view.Surface?) {
+        screenCapture?.setPreviewSurface(surface)
+    }
 
     fun switchCamera(): Boolean {
         if (screenCapture?.isCapturing != true) return false
         screenCapture?.switchCamera(serviceScope)
         return true
+    }
+
+    // ─── Internet Tunnel ──────────────────────────────────────────────────────
+
+    private fun startTunnel() {
+        if (sshTunnel != null) return
+        sshTunnel = SshTunnel(PORT)
+        sshTunnel!!.start(serviceScope) { url ->
+            publicUrl = url
+            if (url.isNotEmpty()) {
+                Log.i(TAG, "Public URL: $url")
+            }
+            if (screenCapture?.isCapturing == true) {
+                updateNotification(buildLiveNotificationText())
+            }
+        }
+    }
+
+    private fun stopTunnel() {
+        sshTunnel?.stop()
+        sshTunnel = null
+        publicUrl = ""
     }
 
     // ─── Tailscale ───────────────────────────────────────────────────────────
