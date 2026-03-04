@@ -66,8 +66,40 @@ fun MainScreen(
                 .fillMaxSize()
                 .background(BgColor)
         ) {
-            // Tab bar (only when server is running)
+            // AirDeck header + status
             if (state.serverRunning) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Status dot
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    state.capturing -> GreenColor
+                                    state.serverRunning -> AccentColor
+                                    else -> DangerColor
+                                }
+                            )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(text = "AirDeck", color = AccentColor, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = when {
+                            state.capturing -> "LIVE"
+                            state.serverRunning -> "Server Running"
+                            else -> "Starting..."
+                        },
+                        color = TextColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // Tab bar below header
                 TabRow(
                     selectedTabIndex = currentTab.ordinal,
                     containerColor = SurfaceColor,
@@ -210,57 +242,24 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
             .fillMaxSize()
             .background(BgColor)
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(horizontal = 24.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(24.dp))
-
-        // Status dot
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(
-                    when {
-                        state.capturing -> GreenColor
-                        state.serverRunning -> AccentColor
-                        else -> DangerColor
-                    }
-                )
-        )
-
-        Spacer(Modifier.height(24.dp))
-
-        Text(text = "AirDeck", color = AccentColor, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = when {
-                state.capturing -> "LIVE"
-                state.serverRunning -> "Server Running"
-                else -> "Starting..."
-            },
-            color = TextColor, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
-        )
-
         if (state.serverRunning) {
-            Spacer(Modifier.height(24.dp))
-
-            // Access code card (shows first code)
-            Surface(shape = RoundedCornerShape(12.dp), color = SurfaceColor, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            // Compact access code card
+            Surface(shape = RoundedCornerShape(8.dp), color = SurfaceColor, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "VIEWER CODE", color = TextMuted, fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp
+                        text = "VIEWER CODE", color = TextMuted, fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp
                     )
-                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = state.accessCode, color = OrangeColor, fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold, letterSpacing = 12.sp
+                        text = state.accessCode, color = OrangeColor, fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold, letterSpacing = 6.sp
                     )
-                    Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "10 codes available — see Codes tab",
-                        color = TextMuted, fontSize = 12.sp
+                        text = "10 codes — see Codes tab",
+                        color = TextMuted, fontSize = 10.sp
                     )
                 }
             }
@@ -327,7 +326,7 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
                 Spacer(Modifier.height(8.dp))
                 Surface(
                     shape = RoundedCornerShape(12.dp), color = Color.Black,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                    modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f)
                 ) {
                     DisposableEffect(Unit) {
                         onDispose { CaptureService.instance?.setPreviewSurface(null) }
