@@ -5,6 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AirDeck</title>
   <link rel="stylesheet" href="/style.css">
+  <style>
+    .status-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 32px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+      text-decoration: none;
+      color: var(--text);
+      transition: border-color 0.2s;
+    }
+    .status-card:hover { border-color: var(--accent); }
+    .status-icon {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      background: #222;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    .status-icon.live { background: #1b3d1b; }
+    .status-label { font-size: 15px; color: var(--text-muted); }
+    .status-value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  </style>
 </head>
 <body>
   <div class="header">
@@ -18,26 +43,17 @@
 
   <div class="container">
     <div class="dashboard-grid">
-      <!-- Live Stream Card -->
-      <a href="/live.html" class="card card-link">
-        <div class="card-header">
-          <span class="live-badge" id="liveBadge" style="display:none">LIVE</span>
-          <h2>Screen Stream</h2>
+      <a href="/live.html" class="status-card" id="streamCard">
+        <div class="status-icon" id="streamIcon">&#128250;</div>
+        <div>
+          <div class="status-label">Screen Stream</div>
+          <div class="status-value" id="streamStatus">Offline</div>
         </div>
-        <div class="card-body">
-          <div class="player-wrapper">
-            <video id="preview" muted autoplay playsinline></video>
-            <div class="player-overlay" id="previewOverlay">
-              Connecting to stream...
-            </div>
-          </div>
-        </div>
+        <span class="live-badge" id="liveBadge" style="display:none;margin-left:auto">LIVE</span>
       </a>
-
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
   <script>
     async function checkStatus() {
       try {
@@ -45,69 +61,27 @@
         const data = await res.json();
         const dot = document.getElementById('statusDot');
         const badge = document.getElementById('liveBadge');
+        const icon = document.getElementById('streamIcon');
+        const status = document.getElementById('streamStatus');
 
         if (data.streamReady) {
           dot.classList.add('live');
           badge.style.display = '';
-          initPreview();
+          icon.classList.add('live');
+          const v = data.viewers || 0;
+          status.textContent = v === 1 ? '1 viewer' : v + ' viewers';
+        } else if (data.capturing) {
+          dot.classList.add('live');
+          badge.style.display = 'none';
+          icon.classList.remove('live');
+          status.textContent = 'Starting...';
         } else {
           dot.classList.remove('live');
           badge.style.display = 'none';
+          icon.classList.remove('live');
+          status.textContent = 'Offline';
         }
       } catch (e) {}
-    }
-
-    let previewHls = null;
-    let previewInit = false;
-    function initPreview() {
-      if (previewInit) return;
-      previewInit = true;
-      const video = document.getElementById('preview');
-      const overlay = document.getElementById('previewOverlay');
-
-      if (previewHls) { previewHls.destroy(); previewHls = null; }
-
-      if (Hls.isSupported()) {
-        previewHls = new Hls({
-          liveDurationInfinity: true,
-          enableWorker: true,
-          manifestLoadingTimeOut: 10000,
-          manifestLoadingMaxRetry: 2,
-          fragLoadingTimeOut: 10000,
-          xhrSetup: function(xhr) { xhr.withCredentials = true; }
-        });
-        previewHls.loadSource('/hls/screen.m3u8');
-        previewHls.attachMedia(video);
-
-        const timeout = setTimeout(() => {
-          if (video.paused || video.readyState < 2) {
-            previewInit = false;
-            if (previewHls) { previewHls.destroy(); previewHls = null; }
-            overlay.textContent = 'Stream starting — retrying...';
-          }
-        }, 15000);
-
-        previewHls.on(Hls.Events.MANIFEST_PARSED, () => {
-          clearTimeout(timeout);
-          overlay.classList.add('hidden');
-          video.play().catch(() => {});
-        });
-        previewHls.on(Hls.Events.ERROR, (e, data) => {
-          if (data.fatal) {
-            clearTimeout(timeout);
-            previewInit = false;
-            if (previewHls) { previewHls.destroy(); previewHls = null; }
-            overlay.classList.remove('hidden');
-            overlay.textContent = 'Stream offline — retrying...';
-          }
-        });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = '/hls/screen.m3u8';
-        video.addEventListener('loadedmetadata', () => {
-          overlay.classList.add('hidden');
-          video.play().catch(() => {});
-        });
-      }
     }
 
     checkStatus();

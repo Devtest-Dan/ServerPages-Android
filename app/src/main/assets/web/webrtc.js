@@ -13,6 +13,7 @@
 class AirDeckWebRTC {
   constructor(videoElement, opts = {}) {
     this.video = videoElement;
+    this.basePath = opts.basePath || '';
     this.pc = null;
     this.viewerId = null;
     this.onConnected = opts.onConnected || (() => {});
@@ -24,7 +25,7 @@ class AirDeckWebRTC {
   async start() {
     try {
       // 1. Get ICE config from server
-      const statusRes = await fetch('/api/webrtc/status', { credentials: 'include' });
+      const statusRes = await fetch(this.basePath + '/api/webrtc/status', { credentials: 'include' });
       if (!statusRes.ok) throw new Error('WebRTC not available');
       const status = await statusRes.json();
       if (!status.webrtc) throw new Error('WebRTC not active on server');
@@ -101,7 +102,7 @@ class AirDeckWebRTC {
 
       // 5. POST complete offer to server
       const offerSdp = this.pc.localDescription.sdp;
-      const offerRes = await fetch('/api/webrtc/offer', {
+      const offerRes = await fetch(this.basePath + '/api/webrtc/offer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -160,7 +161,7 @@ class AirDeckWebRTC {
     // Notify server
     if (this.viewerId) {
       try {
-        navigator.sendBeacon('/api/webrtc/hangup',
+        navigator.sendBeacon(this.basePath + '/api/webrtc/hangup',
           new Blob([JSON.stringify({ viewerId: this.viewerId })],
             { type: 'application/json' }));
       } catch (e) {}

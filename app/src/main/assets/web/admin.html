@@ -67,7 +67,8 @@
     </div>
 
     <div class="player-wrapper">
-      <video id="player" autoplay playsinline controls muted></video>
+      <video id="player" autoplay playsinline muted style="position:absolute;width:1px;height:1px;opacity:0;"></video>
+      <canvas id="videoCanvas" style="width:100%;max-height:70vh;display:block;background:#000;border-radius:8px;"></canvas>
       <div class="player-overlay" id="overlay">
         Waiting for stream...
       </div>
@@ -85,85 +86,99 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <script src="/admin/webrtc.js"></script>
   <script>
     const video = document.getElementById('player');
+    const videoCanvas = document.getElementById('videoCanvas');
+    const canvasCtx = videoCanvas.getContext('2d');
     const overlay = document.getElementById('overlay');
     const statusDot = document.getElementById('statusDot');
     const liveBadge = document.getElementById('liveBadge');
     const statusText = document.getElementById('status');
     const resText = document.getElementById('resolution');
     const viewersEl = document.getElementById('viewers');
-    let hls = null;
     let retryTimeout = null;
-    let startTimeout = null;
+    let canvasRunning = false;
+    let streamerStopped = false;
+    let streaming = false;
 
-    function startStream() {
-      if (hls) { hls.destroy(); hls = null; }
-      clearTimeout(startTimeout);
-
-      if (Hls.isSupported()) {
-        hls = new Hls({
-          liveDurationInfinity: true,
-          enableWorker: true,
-          lowLatencyMode: false,
-          backBufferLength: 0,
-          manifestLoadingTimeOut: 10000,
-          manifestLoadingMaxRetry: 3,
-          levelLoadingTimeOut: 10000,
-          fragLoadingTimeOut: 10000
-        });
-
-        // Admin uses /admin/hls/ path — not counted as a viewer
-        hls.loadSource('/admin/hls/screen.m3u8');
-        hls.attachMedia(video);
-
-        // Timeout: if no playback within 15s, retry
-        startTimeout = setTimeout(() => {
-          if (video.paused || video.readyState < 2) {
-            if (hls) { hls.destroy(); hls = null; }
-            streamOffline();
-          }
-        }, 15000);
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          clearTimeout(startTimeout);
-          overlay.classList.add('hidden');
-          statusDot.classList.add('live');
-          liveBadge.style.display = '';
-          statusText.textContent = 'Streaming';
-          video.play().catch(() => {});
-        });
-
-        hls.on(Hls.Events.ERROR, (e, data) => {
-          if (data.fatal) {
-            clearTimeout(startTimeout);
-            hls.destroy();
-            hls = null;
-            streamOffline();
-          }
-        });
-
-        hls.on(Hls.Events.LEVEL_LOADED, () => {
-          if (video.videoWidth) {
-            resText.textContent = `${video.videoWidth}x${video.videoHeight}`;
-          }
-        });
-
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = '/admin/hls/screen.m3u8';
-        video.addEventListener('loadedmetadata', () => {
-          overlay.classList.add('hidden');
-          statusDot.classList.add('live');
-          liveBadge.style.display = '';
-          statusText.textContent = 'Streaming';
-          video.play().catch(() => {});
-        });
-        video.addEventListener('error', streamOffline);
+    // ─── Canvas renderer ─────────────────────────
+    function drawVideoFrame() {
+      if (!canvasRunning) return;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        if (videoCanvas.width !== video.videoWidth || videoCanvas.height !== video.videoHeight) {
+          videoCanvas.width = video.videoWidth;
+          videoCanvas.height = video.videoHeight;
+        }
+        canvasCtx.drawImage(video, 0, 0);
       }
+      requestAnimationFrame(drawVideoFrame);
+    }
+    function startCanvasRenderer() {
+      if (!canvasRunning) { canvasRunning = true; drawVideoFrame(); }
+    }
+    function stopCanvasRenderer() { canvasRunning = false; }
+
+    // ─── WebRTC streaming ────────────────────────
+    function cleanup() {
+      stopCanvasRenderer();
+      streaming = false;
+      if (window._airdeckWebRTC) {
+        window._airdeckWebRTC.stop();
+        window._airdeckWebRTC = null;
+      }
+      video.srcObject = null;
     }
 
-    let streamerStopped = false;
+    async function startStream() {
+      cleanup();
+      clearTimeout(retryTimeout);
+      overlay.classList.remove('hidden');
+      overlay.textContent = 'Connecting (P2P)...';
+      statusText.textContent = 'Connecting...';
+
+      try {
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          const settle = (fn) => { if (!settled) { settled = true; fn(); } };
+
+          const rtc = new AirDeckWebRTC(video, {
+            basePath: '/admin',
+            onConnected: () => {
+              overlay.classList.add('hidden');
+              statusDot.classList.add('live');
+              liveBadge.style.display = '';
+              statusText.textContent = 'Streaming (P2P)';
+              streaming = true;
+              startCanvasRenderer();
+              video.onloadedmetadata = () => {
+                if (video.videoWidth) resText.textContent = video.videoWidth + 'x' + video.videoHeight;
+              };
+              settle(() => resolve());
+            },
+            onDisconnected: () => {
+              settle(() => reject(new Error('disconnected')));
+              if (!streamerStopped) {
+                statusText.textContent = 'Reconnecting...';
+                overlay.textContent = 'Reconnecting...';
+                overlay.classList.remove('hidden');
+                cleanup();
+                clearTimeout(retryTimeout);
+                retryTimeout = setTimeout(startStream, 2000);
+              }
+            },
+            onError: (msg) => settle(() => reject(new Error(msg)))
+          });
+
+          window._airdeckWebRTC = rtc;
+          rtc.start().then(() => {
+            setTimeout(() => settle(() => reject(new Error('timeout'))), 10000);
+          }).catch(err => settle(() => reject(err)));
+        });
+      } catch (e) {
+        streamOffline();
+      }
+    }
 
     function streamOffline() {
       overlay.classList.remove('hidden');
@@ -181,6 +196,7 @@
       }
     }
 
+    // ─── Status polling ──────────────────────────
     async function updateStatus() {
       try {
         const res = await fetch('/admin/api/status');
@@ -195,7 +211,6 @@
           viewersEl.textContent = data.viewers === 1 ? '1 viewer' : `${data.viewers} viewers`;
           viewersEl.style.color = data.viewers > 0 ? '#66bb6a' : '';
         }
-        // WebRTC peer count
         const webrtcEl = document.getElementById('webrtcPeers');
         if (typeof data.webrtcPeers === 'number' && data.webrtc) {
           webrtcEl.textContent = data.webrtcPeers + ' P2P';
@@ -220,15 +235,14 @@
         if (data.camera) {
           document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
         }
-        // Handle streamer stop/start
         if (data.capturing === false) {
           streamerStopped = true;
-          if (hls) { hls.destroy(); hls = null; }
+          cleanup();
           streamOffline();
         } else if (data.capturing === true && streamerStopped) {
           streamerStopped = false;
         }
-        if (data.streamReady && !hls && !video.src) {
+        if (data.capturing && !streaming && !window._airdeckWebRTC) {
           startStream();
         }
       } catch (e) {}

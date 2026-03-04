@@ -102,9 +102,15 @@ class WebServer(
                 uri == "/admin/api/download-folder" && method == Method.GET ->
                     handleDownloadFolder(session)
 
-                // --- Admin WebRTC status (no auth) ---
+                // --- Admin WebRTC (no auth) ---
+                uri == "/admin/webrtc.js" ->
+                    serveAsset("web/webrtc.js", "application/javascript")
                 uri == "/admin/api/webrtc/status" && method == Method.GET ->
                     handleWebRtcStatus()
+                uri == "/admin/api/webrtc/offer" && method == Method.POST ->
+                    handleWebRtcOffer(session, clientIp)
+                uri == "/admin/api/webrtc/hangup" && method == Method.POST ->
+                    handleWebRtcHangup(session)
 
                 // --- Admin chat APIs (no auth) ---
                 uri == "/admin/api/codes" && method == Method.GET ->

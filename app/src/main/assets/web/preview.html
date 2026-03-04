@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * { margin:0; padding:0; }
+  body { background:#000; overflow:hidden; }
+  canvas { width:100%; height:100vh; display:block; }
+  .msg { color:#888; font-family:sans-serif; font-size:14px;
+         position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); }
+</style>
+</head><body>
+<video id="v" autoplay playsinline muted style="position:absolute;width:1px;height:1px;opacity:0;"></video>
+<canvas id="c"></canvas>
+<div class="msg" id="msg">Loading...</div>
+<script src="/admin/webrtc.js"></script>
+<script>
+const v=document.getElementById('v'), c=document.getElementById('c'), ctx=c.getContext('2d'), msg=document.getElementById('msg');
+let drawing=false, retryTimer=null;
+
+function drawFrame(){
+  if(!drawing)return;
+  if(v.readyState>=2&&v.videoWidth>0){
+    if(c.width!==v.videoWidth||c.height!==v.videoHeight){c.width=v.videoWidth;c.height=v.videoHeight;}
+    ctx.drawImage(v,0,0);
+  }
+  requestAnimationFrame(drawFrame);
+}
+
+function start(){
+  if(window._airdeckWebRTC){window._airdeckWebRTC.stop();window._airdeckWebRTC=null;}
+  drawing=false;
+  clearTimeout(retryTimer);
+  msg.style.display='';
+  msg.textContent='Connecting...';
+
+  const rtc=new AirDeckWebRTC(v,{
+    basePath:'/admin',
+    onConnected:()=>{msg.style.display='none';drawing=true;drawFrame();},
+    onDisconnected:()=>{drawing=false;msg.style.display='';msg.textContent='Reconnecting...';clearTimeout(retryTimer);retryTimer=setTimeout(start,2000);},
+    onError:()=>{msg.style.display='';msg.textContent='Offline';clearTimeout(retryTimer);retryTimer=setTimeout(start,5000);}
+  });
+  window._airdeckWebRTC=rtc;
+  rtc.start().catch(()=>{msg.textContent='Offline';clearTimeout(retryTimer);retryTimer=setTimeout(start,5000);});
+}
+start();
+</script>
+</body></html>
