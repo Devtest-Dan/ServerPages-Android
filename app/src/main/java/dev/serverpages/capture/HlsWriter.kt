@@ -2,19 +2,16 @@ package dev.serverpages.capture
 
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Writes H.264 encoded buffers into standalone MP4 segments with a rolling m3u8 manifest.
+ * Writes H.264 encoded buffers into MPEG-TS segments with a rolling m3u8 manifest.
  *
- * Each segment is a complete, self-contained MP4 file (~2 seconds).
- * MediaMuxer creates the moov atom when stop() is called, making each file playable.
- * The manifest uses EXT-X-VERSION:3 without EXT-X-MAP for maximum compatibility —
- * hls.js handles standalone MP4 segments natively.
+ * Each segment is a self-contained .ts file (~2 seconds) created by TsMuxer.
+ * TS segments are natively supported by hls.js for live HLS streaming.
  */
 class HlsWriter(
     private val hlsDir: File,
@@ -26,15 +23,18 @@ class HlsWriter(
         private const val MANIFEST_NAME = "screen.m3u8"
     }
 
-    private var muxer: MediaMuxer? = null
-    private var trackIndex: Int = -1
+    private var tsMuxer: TsMuxer? = null
     private var segmentIndex = AtomicInteger(0)
     private var segmentStartUs: Long = -1L
     private var segmentFirstPtsUs: Long = -1L
     private var mediaFormat: MediaFormat? = null
     private var mediaSequence: Int = 0
     private var firstSegmentDone: Boolean = false
-    private val segmentDurations = mutableListOf<Double>() // seconds, for each active segment
+    private val segmentDurations = mutableListOf<Double>()
+
+    // SPS/PPS extracted from encoder format — prepended to keyframes for TS
+    private var spsData: ByteArray? = null
+    private var ppsData: ByteArray? = null
 
     init {
         hlsDir.mkdirs()
@@ -43,26 +43,37 @@ class HlsWriter(
 
     fun setFormat(format: MediaFormat) {
         mediaFormat = format
-        Log.d(TAG, "Format set: $format")
+
+        val csd0 = format.getByteBuffer("csd-0")
+        val csd1 = format.getByteBuffer("csd-1")
+        if (csd0 != null) {
+            spsData = ByteArray(csd0.remaining())
+            csd0.get(spsData!!)
+            csd0.rewind()
+        }
+        if (csd1 != null) {
+            ppsData = ByteArray(csd1.remaining())
+            csd1.get(ppsData!!)
+            csd1.rewind()
+        }
+
+        Log.d(TAG, "Format set — SPS: ${spsData?.size} bytes, PPS: ${ppsData?.size} bytes")
     }
 
     fun writeSample(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
         if (mediaFormat == null) return
 
-        // Initialize segment start time
         if (segmentStartUs < 0L) {
             segmentStartUs = info.presentationTimeUs
         }
 
-        // Check if we should rotate to a new segment (on keyframes only)
         val isKeyFrame = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
         val elapsed = info.presentationTimeUs - segmentStartUs
 
-        if (muxer == null) {
+        if (tsMuxer == null) {
             startNewSegment()
             segmentFirstPtsUs = info.presentationTimeUs
         } else if (isKeyFrame && elapsed >= segmentDurationUs) {
-            // Record duration of completed segment
             val durationSec = elapsed / 1_000_000.0
             finalizeMuxer(durationSec)
             startNewSegment()
@@ -70,17 +81,25 @@ class HlsWriter(
             segmentFirstPtsUs = info.presentationTimeUs
         }
 
-        if (muxer != null && trackIndex >= 0) {
-            // Adjust PTS to be segment-relative (starts at 0 for each segment)
-            val adjustedInfo = MediaCodec.BufferInfo()
-            adjustedInfo.set(
-                info.offset,
-                info.size,
-                info.presentationTimeUs - segmentFirstPtsUs,
-                info.flags
-            )
+        if (tsMuxer != null) {
+            // Extract raw H.264 data from ByteBuffer
+            val rawData = ByteArray(info.size)
+            buffer.get(rawData)
+
+            // Prepend SPS/PPS before keyframes (required for TS — no moov atom)
+            val nalData = if (isKeyFrame && spsData != null && ppsData != null) {
+                val combined = ByteArray(spsData!!.size + ppsData!!.size + rawData.size)
+                System.arraycopy(spsData!!, 0, combined, 0, spsData!!.size)
+                System.arraycopy(ppsData!!, 0, combined, spsData!!.size, ppsData!!.size)
+                System.arraycopy(rawData, 0, combined, spsData!!.size + ppsData!!.size, rawData.size)
+                combined
+            } else {
+                rawData
+            }
+
+            val pts = info.presentationTimeUs - segmentFirstPtsUs
             try {
-                muxer!!.writeSampleData(trackIndex, buffer, adjustedInfo)
+                tsMuxer!!.writeSample(nalData, pts, isKeyFrame)
             } catch (e: Exception) {
                 Log.w(TAG, "Error writing sample", e)
             }
@@ -99,29 +118,25 @@ class HlsWriter(
 
     private fun startNewSegment() {
         val idx = segmentIndex.getAndIncrement()
-        val segFile = File(hlsDir, "seg${String.format("%05d", idx)}.mp4")
+        val segFile = File(hlsDir, "seg${String.format("%05d", idx)}.ts")
 
         try {
-            muxer = MediaMuxer(segFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            trackIndex = muxer!!.addTrack(mediaFormat!!)
-            muxer!!.start()
+            tsMuxer = TsMuxer()
+            tsMuxer!!.start(segFile)
             Log.d(TAG, "Started segment: ${segFile.name}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start segment ${segFile.name}", e)
-            muxer = null
-            trackIndex = -1
+            tsMuxer = null
         }
     }
 
     private fun finalizeMuxer(durationSec: Double = 2.0) {
         try {
-            muxer?.stop()
-            muxer?.release()
+            tsMuxer?.stop()
         } catch (e: Exception) {
             Log.w(TAG, "Error finalizing muxer", e)
         }
-        muxer = null
-        trackIndex = -1
+        tsMuxer = null
 
         synchronized(segmentDurations) {
             segmentDurations.add(durationSec)
@@ -132,11 +147,11 @@ class HlsWriter(
     }
 
     private fun cleanOldSegments() {
-        val segments = hlsDir.listFiles { f -> f.name.startsWith("seg") && f.name.endsWith(".mp4") }
+        val segments = hlsDir.listFiles { f -> f.name.startsWith("seg") && f.name.endsWith(".ts") }
             ?.sortedBy { it.name }
             ?: return
 
-        if (segments.size > maxSegments + 1) { // +1 for currently writing segment
+        if (segments.size > maxSegments + 1) {
             val toDelete = segments.take(segments.size - maxSegments - 1)
             for (f in toDelete) {
                 f.delete()
@@ -145,19 +160,18 @@ class HlsWriter(
 
             synchronized(segmentDurations) {
                 repeat(toDelete.size.coerceAtMost(segmentDurations.size)) {
-                    segmentDurations.removeFirst()
+                    segmentDurations.removeAt(0)
                 }
             }
         }
     }
 
     private fun writeManifest() {
-        val allSegments = hlsDir.listFiles { f -> f.name.startsWith("seg") && f.name.endsWith(".mp4") }
+        val allSegments = hlsDir.listFiles { f -> f.name.startsWith("seg") && f.name.endsWith(".ts") }
             ?.sortedBy { it.name }
             ?: return
 
-        // Only include completed segments — in-progress MP4 has no moov atom
-        val completedSegments = if (muxer != null && allSegments.isNotEmpty()) {
+        val completedSegments = if (tsMuxer != null && allSegments.isNotEmpty()) {
             allSegments.dropLast(1)
         } else {
             allSegments.toList()
@@ -188,7 +202,7 @@ class HlsWriter(
     }
 
     fun stop() {
-        if (muxer != null) {
+        if (tsMuxer != null) {
             val elapsed = if (segmentStartUs >= 0) {
                 (System.nanoTime() / 1000 - segmentStartUs).coerceAtLeast(0) / 1_000_000.0
             } else 2.0
