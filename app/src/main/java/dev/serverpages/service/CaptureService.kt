@@ -125,6 +125,16 @@ class CaptureService : LifecycleService() {
         return null
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "Task removed (app swiped away) — service continues running")
+        // Service stays alive via foreground notification + stopWithTask=false
+        // Re-post notification in case system cleared it
+        if (webServer != null) {
+            updateNotification(buildLiveNotificationText())
+        }
+    }
+
     override fun onDestroy() {
         stopTunnel()
         stopCapture()
