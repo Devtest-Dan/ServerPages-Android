@@ -38,8 +38,10 @@ class WebServer(
 
     // Callbacks from CaptureService
     var onQualityChange: ((String) -> Boolean)? = null
+    var onCameraSwitch: (() -> Boolean)? = null
     var getCaptureState: (() -> Boolean)? = null
     var getCurrentQuality: (() -> String)? = null
+    var getCameraFacing: (() -> String)? = null
     var getTailscaleUrl: (() -> String)? = null
 
     // Auth
@@ -79,6 +81,8 @@ class WebServer(
                     handleHls(uri.removePrefix("/admin/hls/"))
                 uri == "/admin/api/status" ->
                     handleStatus()
+                uri == "/admin/api/camera" && method == Method.POST ->
+                    handleCameraSwitch()
                 uri == "/admin/api/files" && method == Method.GET ->
                     handleFiles(session)
                 uri == "/admin/api/stream" && method == Method.GET ->
@@ -105,6 +109,7 @@ class WebServer(
                     when {
                         uri == "/api/status" && method == Method.GET -> handleStatus()
                         uri == "/api/quality" && method == Method.POST -> handleQuality(session)
+                        uri == "/api/camera" && method == Method.POST -> handleCameraSwitch()
 
                         uri.startsWith("/hls/") -> {
                             val fileName = uri.removePrefix("/hls/")
@@ -212,6 +217,7 @@ class WebServer(
         val manifestExists = File(hlsDir, "screen.m3u8").exists()
 
         val tailscale = getTailscaleUrl?.invoke() ?: ""
+        val camera = getCameraFacing?.invoke() ?: "back"
 
         return jsonResponse(
             Response.Status.OK, mapOf(
@@ -219,6 +225,7 @@ class WebServer(
                 "uptime" to uptimeSec,
                 "streamReady" to (capturing && manifestExists),
                 "quality" to quality,
+                "camera" to camera,
                 "viewers" to getViewerCount(),
                 "tailscaleUrl" to tailscale
             )
@@ -413,6 +420,14 @@ class WebServer(
 
         val changed = onQualityChange?.invoke(quality) ?: false
         return jsonResponse(Response.Status.OK, mapOf("quality" to quality, "changed" to changed))
+    }
+
+    // ─── API: Camera switch ─────────────────────────────────────────────────
+
+    private fun handleCameraSwitch(): Response {
+        val switched = onCameraSwitch?.invoke() ?: false
+        val camera = getCameraFacing?.invoke() ?: "back"
+        return jsonResponse(Response.Status.OK, mapOf("camera" to camera, "switched" to switched))
     }
 
     // ─── HLS segment serving ──────────────────────────────────────────────────

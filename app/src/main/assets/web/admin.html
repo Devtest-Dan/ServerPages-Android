@@ -79,6 +79,7 @@
       <span id="status">Connecting...</span>
       <span class="viewer-count" id="viewers">0 viewers</span>
       <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
+      <button id="cameraBtn" onclick="switchCamera()" style="margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
     </div>
   </div>
 
@@ -189,10 +190,24 @@
           tsEl.textContent = 'Tailscale: ' + data.tailscaleUrl;
           tsEl.style.display = '';
         }
+        if (data.camera) {
+          document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+        }
         if (data.streamReady && !hls && !video.src) {
           startStream();
         }
       } catch (e) {}
+    }
+
+    async function switchCamera() {
+      const btn = document.getElementById('cameraBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/admin/api/camera', { method: 'POST' });
+        const data = await res.json();
+        btn.textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+      } catch (e) {}
+      btn.disabled = false;
     }
 
     startStream();

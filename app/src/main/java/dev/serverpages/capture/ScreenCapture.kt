@@ -47,6 +47,7 @@ class ScreenCapture(
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var useCamera: Boolean = false
+    private var cameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
 
     @Volatile
     var isCapturing: Boolean = false
@@ -79,9 +80,9 @@ class ScreenCapture(
 
         // Open camera
         val camManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = findBackCamera(camManager)
+        val cameraId = findCamera(camManager, cameraFacing)
         if (cameraId == null) {
-            Log.e(TAG, "No back camera found")
+            Log.e(TAG, "No camera found for facing $cameraFacing")
             cleanup()
             return
         }
@@ -120,16 +121,67 @@ class ScreenCapture(
         }
     }
 
-    private fun findBackCamera(manager: CameraManager): String? {
+    private fun findCamera(manager: CameraManager, facing: Int): String? {
         for (id in manager.cameraIdList) {
             val chars = manager.getCameraCharacteristics(id)
-            val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            if (facing == CameraCharacteristics.LENS_FACING_BACK) {
-                return id
-            }
+            val lensFacing = chars.get(CameraCharacteristics.LENS_FACING)
+            if (lensFacing == facing) return id
         }
-        // Fallback to first camera
         return manager.cameraIdList.firstOrNull()
+    }
+
+    /**
+     * Switch between front and back camera without stopping the encoder.
+     */
+    fun switchCamera(scope: CoroutineScope) {
+        if (!isCapturing || !useCamera) return
+
+        val newFacing = if (cameraFacing == CameraCharacteristics.LENS_FACING_BACK) {
+            CameraCharacteristics.LENS_FACING_FRONT
+        } else {
+            CameraCharacteristics.LENS_FACING_BACK
+        }
+
+        // Close current camera
+        try { cameraSession?.close() } catch (_: Exception) {}
+        cameraSession = null
+        try { cameraDevice?.close() } catch (_: Exception) {}
+        cameraDevice = null
+
+        cameraFacing = newFacing
+
+        // Open new camera on the same encoder surface
+        val camManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val cameraId = findCamera(camManager, cameraFacing)
+        if (cameraId == null) {
+            Log.e(TAG, "No camera found for facing $cameraFacing")
+            return
+        }
+
+        try {
+            camManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    createCameraSession(camera, quality)
+                    Log.i(TAG, "Switched to ${getCameraLabel()}")
+                }
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    cameraDevice = null
+                }
+                override fun onError(camera: CameraDevice, error: Int) {
+                    Log.e(TAG, "Camera error on switch: $error")
+                    camera.close()
+                    cameraDevice = null
+                }
+            }, cameraHandler)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Camera permission denied on switch", e)
+        }
+    }
+
+    fun getCameraLabel(): String {
+        return if (cameraFacing == CameraCharacteristics.LENS_FACING_FRONT) "front" else "back"
     }
 
     private fun createCameraSession(camera: CameraDevice, preset: QualityPreset) {

@@ -90,6 +90,7 @@
       <span id="resolution">—</span>
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
+      <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
       <div class="quality-toggle">
         <button class="quality-btn" data-quality="720p" onclick="setQuality('720p')">720p</button>
         <button class="quality-btn" data-quality="1080p" onclick="setQuality('1080p')">1080p</button>
@@ -195,6 +196,9 @@
             hrs > 0 ? `Uptime: ${hrs}h ${mins % 60}m` : `Uptime: ${mins}m`;
         }
         if (data.quality) updateQualityButtons(data.quality);
+        if (data.camera) {
+          document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+        }
         if (data.streamReady && !hls && !video.src) {
           startStream();
         }
@@ -229,6 +233,17 @@
       } catch (e) {}
 
       btns.forEach(b => b.disabled = false);
+    }
+
+    async function switchCamera() {
+      const btn = document.getElementById('cameraBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/camera', { method: 'POST' });
+        const data = await res.json();
+        btn.textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+      } catch (e) {}
+      btn.disabled = false;
     }
 
     startStream();

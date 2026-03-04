@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -52,6 +53,7 @@ class CaptureService : LifecycleService() {
     private var webServer: WebServer? = null
     private var screenCapture: ScreenCapture? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
     private var tailscaleHostname: String = ""
@@ -76,6 +78,7 @@ class CaptureService : LifecycleService() {
             ACTION_START_SERVER -> {
                 startForeground(NOTIFICATION_ID, buildNotification("Starting server..."))
                 acquireWakeLock()
+                acquireWifiLock()
                 startWebServer()
                 launchTailscale()
                 // Show notification that prompts user to tap for capture
@@ -92,6 +95,7 @@ class CaptureService : LifecycleService() {
 
                 startForeground(NOTIFICATION_ID, buildNotification("Starting capture..."))
                 acquireWakeLock()
+                acquireWifiLock()
                 startWebServer()
                 startCapture(resultCode, resultData)
                 launchTailscale()
@@ -100,6 +104,7 @@ class CaptureService : LifecycleService() {
             ACTION_STOP -> {
                 stopCapture()
                 stopWebServer()
+                releaseWifiLock()
                 releaseWakeLock()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -117,6 +122,7 @@ class CaptureService : LifecycleService() {
     override fun onDestroy() {
         stopCapture()
         stopWebServer()
+        releaseWifiLock()
         releaseWakeLock()
         serviceScope.cancel()
         instance = null
@@ -132,8 +138,10 @@ class CaptureService : LifecycleService() {
         webServer = WebServer(this, hlsDir, PORT).apply {
             getCaptureState = { screenCapture?.isCapturing ?: false }
             getCurrentQuality = { currentQuality.label }
+            getCameraFacing = { this@CaptureService.getCameraLabel() }
             getTailscaleUrl = { tailscaleHostname }
             onQualityChange = { label -> changeQuality(label) }
+            onCameraSwitch = { switchCamera() }
             this.accessCode = this@CaptureService.accessCode
         }
 
@@ -201,6 +209,13 @@ class CaptureService : LifecycleService() {
     fun getTailscaleUrl(): String = tailscaleHostname
     fun getAccessCode(): String = accessCode
     fun getViewerCount(): Int = webServer?.getViewerCount() ?: 0
+    fun getCameraLabel(): String = screenCapture?.getCameraLabel() ?: "back"
+
+    fun switchCamera(): Boolean {
+        if (screenCapture?.isCapturing != true) return false
+        screenCapture?.switchCamera(serviceScope)
+        return true
+    }
 
     // ─── Tailscale ───────────────────────────────────────────────────────────
 
@@ -318,6 +333,28 @@ class CaptureService : LifecycleService() {
         }
         wakeLock = null
         Log.d(TAG, "WakeLock released")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        if (wifiLock != null) return
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wm.createWifiLock(mode, "ServerPages::WifiLock")
+        wifiLock!!.acquire()
+        Log.d(TAG, "WifiLock acquired")
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wifiLock = null
+        Log.d(TAG, "WifiLock released")
     }
 
     // ─── Network ─────────────────────────────────────────────────────────────
