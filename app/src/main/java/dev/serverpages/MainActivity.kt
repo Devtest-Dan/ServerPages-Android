@@ -48,11 +48,11 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == RESULT_OK && result.data != null) {
-                Log.i(TAG, "MediaProjection granted — starting capture")
+                Log.i(TAG, "MediaProjection granted — starting capture with projection data")
                 startCaptureService(result.resultCode, result.data!!)
             } else {
-                Log.w(TAG, "MediaProjection denied — server-only mode")
-                startServerOnly()
+                Log.w(TAG, "MediaProjection denied — camera-only mode (no screen capture)")
+                startCameraService()
             }
             // Only go to background after the initial permission setup
             if (isInitialSetup) {
@@ -84,8 +84,8 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "All files access denied — media browser will not work")
                 }
             }
-            // Proceed to capture after storage settings
-            startCameraService()
+            // Proceed to MediaProjection request after storage settings
+            requestMediaProjection()
         }
 
         setContent {
@@ -214,8 +214,8 @@ class MainActivity : ComponentActivity() {
                             storageAccessLauncher.launch(intent)
                         }
                     } else {
-                        // Camera mode — skip MediaProjection, start service directly
-                        startCameraService()
+                        // Request MediaProjection so screen capture is available from admin
+                        requestMediaProjection()
                     }
                 }
             }
@@ -229,8 +229,8 @@ class MainActivity : ComponentActivity() {
         val next = when (current) {
             SetupStep.NOTIFICATIONS -> SetupStep.CAPTURE
             SetupStep.CAPTURE -> {
-                // Camera permission granted — start the service
-                startCameraService()
+                // Camera permission granted — request MediaProjection then start
+                requestMediaProjection()
                 SetupStep.DONE
             }
             SetupStep.DONE -> SetupStep.DONE

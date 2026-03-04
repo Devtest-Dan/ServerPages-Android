@@ -1,6 +1,7 @@
 package dev.serverpages.webrtc
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import kotlinx.coroutines.*
 import org.webrtc.*
@@ -39,6 +40,7 @@ class WebRtcServer(private val context: Context) {
     private var factory: PeerConnectionFactory? = null
     private var eglBase: EglBase? = null
     private var capturer: Camera2Capturer? = null
+    private var screenCapturer: ScreenCapturerAndroid? = null
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
     private var localVideoTrack: VideoTrack? = null
@@ -48,6 +50,11 @@ class WebRtcServer(private val context: Context) {
     private val peers = ConcurrentHashMap<String, PeerConnection>()
     private var useFrontCamera = true
     private var audioEnabled = true
+    var currentSource: String = "camera"
+        private set
+    private var captureWidth = 1280
+    private var captureHeight = 720
+    private var captureFps = 30
 
     @Volatile
     var isRunning = false
@@ -81,6 +88,10 @@ class WebRtcServer(private val context: Context) {
 
     fun startCamera(width: Int = 1280, height: Int = 720, fps: Int = 30) {
         val f = factory ?: run { Log.e(TAG, "Factory not initialized"); return }
+
+        captureWidth = width
+        captureHeight = height
+        captureFps = fps
 
         // Video source + capturer
         videoSource = f.createVideoSource(false)
@@ -289,7 +300,43 @@ class WebRtcServer(private val context: Context) {
 
     fun getPeerCount(): Int = peers.size
 
+    fun switchToScreen(data: Intent) {
+        try { capturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping camera capturer", e) }
+        capturer?.dispose()
+        capturer = null
+
+        screenCapturer = ScreenCapturerAndroid(data, object : android.media.projection.MediaProjection.Callback() {
+            override fun onStop() {
+                Log.w(TAG, "MediaProjection stopped externally")
+            }
+        })
+        screenCapturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
+        screenCapturer!!.startCapture(captureWidth, captureHeight, captureFps)
+        currentSource = "screen"
+        Log.i(TAG, "Switched to screen capture: ${captureWidth}x${captureHeight}@${captureFps}fps")
+    }
+
+    fun switchToCamera() {
+        try { screenCapturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping screen capturer", e) }
+        screenCapturer?.dispose()
+        screenCapturer = null
+
+        val cameraEnumerator = Camera2Enumerator(context)
+        val cameraName = findCamera(cameraEnumerator, useFrontCamera)
+            ?: run { Log.e(TAG, "No camera found for switch"); return }
+
+        capturer = Camera2Capturer(context, cameraName, null)
+        capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
+        capturer!!.startCapture(captureWidth, captureHeight, captureFps)
+        currentSource = "camera"
+        Log.i(TAG, "Switched to camera: ${captureWidth}x${captureHeight}@${captureFps}fps, front=$useFrontCamera")
+    }
+
     fun switchCamera() {
+        if (currentSource != "camera") {
+            Log.w(TAG, "switchCamera() ignored — currently on $currentSource")
+            return
+        }
         capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
             override fun onCameraSwitchDone(isFront: Boolean) {
                 useFrontCamera = isFront
@@ -318,14 +365,23 @@ class WebRtcServer(private val context: Context) {
         // Close all peers
         peers.keys.toList().forEach { removePeer(it) }
 
-        // Stop camera
+        // Stop camera/screen capturer
         try {
             capturer?.stopCapture()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping capturer", e)
+            Log.w(TAG, "Error stopping camera capturer", e)
         }
         capturer?.dispose()
         capturer = null
+
+        try {
+            screenCapturer?.stopCapture()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping screen capturer", e)
+        }
+        screenCapturer?.dispose()
+        screenCapturer = null
+        currentSource = "camera"
 
         localVideoTrack?.dispose()
         localVideoTrack = null

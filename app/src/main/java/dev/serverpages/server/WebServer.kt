@@ -93,6 +93,8 @@ class WebServer(
                     handleStatus()
                 uri == "/admin/api/camera" && method == Method.POST ->
                     handleCameraSwitch()
+                uri == "/admin/api/source" && method == Method.POST ->
+                    handleSourceSwitch(session)
                 uri == "/admin/api/files" && method == Method.GET ->
                     handleFiles(session)
                 uri == "/admin/api/stream" && method == Method.GET ->
@@ -395,6 +397,9 @@ class WebServer(
         val webrtcActive = webrtcServer?.isRunning ?: false
         val webrtcPeers = webrtcServer?.getPeerCount() ?: 0
 
+        val source = dev.serverpages.service.CaptureService.instance?.getCurrentSource() ?: "camera"
+        val screenAvailable = dev.serverpages.service.CaptureService.instance?.isScreenAvailable() ?: false
+
         return jsonResponse(
             Response.Status.OK, mapOf(
                 "capturing" to capturing,
@@ -406,7 +411,9 @@ class WebServer(
                 "tailscaleUrl" to tailscale,
                 "publicUrl" to publicUrlValue,
                 "webrtc" to webrtcActive,
-                "webrtcPeers" to webrtcPeers
+                "webrtcPeers" to webrtcPeers,
+                "source" to source,
+                "screenAvailable" to screenAvailable
             )
         )
     }
@@ -606,6 +613,26 @@ class WebServer(
         val switched = onCameraSwitch?.invoke() ?: false
         val camera = getCameraFacing?.invoke() ?: "back"
         return jsonResponse(Response.Status.OK, mapOf("camera" to camera, "switched" to switched))
+    }
+
+    // --- API: Source switch ---
+
+    private fun handleSourceSwitch(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        try { session.parseBody(body) } catch (_: Exception) {}
+        val postData = body["postData"] ?: body["content"] ?: ""
+        val json = try { gson.fromJson(postData, JsonObject::class.java) } catch (_: Exception) { null }
+
+        val mode = json?.get("mode")?.asString
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing mode"))
+
+        if (mode != "camera" && mode != "screen") {
+            return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Invalid mode. Use: camera, screen"))
+        }
+
+        val switched = dev.serverpages.service.CaptureService.instance?.switchSource(mode) ?: false
+        val currentSource = dev.serverpages.service.CaptureService.instance?.getCurrentSource() ?: "camera"
+        return jsonResponse(Response.Status.OK, mapOf("source" to currentSource, "switched" to switched))
     }
 
     // --- HLS segment serving ---

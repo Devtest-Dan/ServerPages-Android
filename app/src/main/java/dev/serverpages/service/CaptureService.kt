@@ -63,6 +63,7 @@ class CaptureService : LifecycleService() {
     private var sshTunnel: SshTunnel? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var projectionData: Intent? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
     private var tailscaleHostname: String = ""
@@ -188,6 +189,11 @@ class CaptureService : LifecycleService() {
 
     private fun startCapture(resultCode: Int, data: Intent?) {
         stopCapture()
+
+        // Store projection data for screen capture switching
+        if (data != null) {
+            projectionData = data
+        }
 
         webRtcServer = WebRtcServer(this).also { rtc ->
             rtc.initialize()
@@ -328,6 +334,24 @@ class CaptureService : LifecycleService() {
     }
 
     fun toggleAudio(): Boolean = webRtcServer?.toggleAudio() ?: false
+
+    fun switchSource(mode: String): Boolean {
+        val rtc = webRtcServer ?: return false
+        if (mode == rtc.currentSource) return false
+        if (mode == "screen") {
+            val data = projectionData ?: return false
+            rtc.switchToScreen(data)
+            return true
+        }
+        if (mode == "camera") {
+            rtc.switchToCamera()
+            return true
+        }
+        return false
+    }
+
+    fun getCurrentSource(): String = webRtcServer?.currentSource ?: "camera"
+    fun isScreenAvailable(): Boolean = projectionData != null
 
     // ─── Internet Tunnel ──────────────────────────────────────────────────────
 

@@ -82,7 +82,8 @@
       <span class="viewer-count" id="webrtcPeers" style="display:none; color:#66bb6a;">0 P2P</span>
       <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600;"></span>
       <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
-      <button id="cameraBtn" onclick="switchCamera()" style="margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
+      <button id="sourceBtn" onclick="switchSource()" style="display:none; margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Camera</button>
+      <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
     </div>
   </div>
 
@@ -235,6 +236,16 @@
         if (data.camera) {
           document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
         }
+        // Source toggle
+        const sourceBtn = document.getElementById('sourceBtn');
+        if (data.screenAvailable) {
+          sourceBtn.style.display = '';
+          sourceBtn.dataset.source = data.source;
+          sourceBtn.textContent = data.source === 'screen' ? '\u{1F5A5} Screen' : '\u{1F4F7} Camera';
+          document.getElementById('cameraBtn').style.display = data.source === 'screen' ? 'none' : '';
+        } else {
+          sourceBtn.style.display = 'none';
+        }
         if (data.capturing === false) {
           streamerStopped = true;
           cleanup();
@@ -255,6 +266,26 @@
         const res = await fetch('/admin/api/camera', { method: 'POST' });
         const data = await res.json();
         btn.textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+      } catch (e) {}
+      btn.disabled = false;
+    }
+
+    async function switchSource() {
+      const btn = document.getElementById('sourceBtn');
+      btn.disabled = true;
+      const currentMode = btn.dataset.source || 'camera';
+      const newMode = currentMode === 'camera' ? 'screen' : 'camera';
+      try {
+        const res = await fetch('/admin/api/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: newMode })
+        });
+        const data = await res.json();
+        btn.dataset.source = data.source;
+        btn.textContent = data.source === 'screen' ? '\u{1F5A5} Screen' : '\u{1F4F7} Camera';
+        // Hide/show camera switch based on source
+        document.getElementById('cameraBtn').style.display = data.source === 'screen' ? 'none' : '';
       } catch (e) {}
       btn.disabled = false;
     }
