@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Public tunnel — exposes local HTTP port to the internet.
- * Tries pinggy.io then serveo.net, captures URL from SSH shell output.
+ * Tries serveo.net (free, unlimited) then pinggy.io as fallback.
  */
 class SshTunnel(private val localPort: Int) {
 
@@ -53,96 +53,113 @@ class SshTunnel(private val localPort: Int) {
         }
     }
 
-    private data class TunnelService(val host: String, val port: Int, val user: String)
-
     private suspend fun connect(onUrlChanged: (String) -> Unit) {
-        val jsch = JSch()
+        // Try serveo.net first (free, unlimited), then pinggy as fallback
+        val url = tryServeo() ?: tryPinggy()
 
-        // Generate ephemeral key pair
-        val keyPair = KeyPair.genKeyPair(jsch, KeyPair.RSA, 2048)
-        val privKey = ByteArrayOutputStream()
-        val pubKey = ByteArrayOutputStream()
-        keyPair.writePrivateKey(privKey)
-        keyPair.writePublicKey(pubKey, "airdeck")
-        jsch.addIdentity("tunnel", privKey.toByteArray(), pubKey.toByteArray(), null)
-        keyPair.dispose()
+        if (url != null) {
+            publicUrl = url
+            isConnected = true
+            withContext(Dispatchers.Main) { onUrlChanged(url) }
+            Log.i(TAG, "Public URL: $url")
 
-        val services = listOf(
-            TunnelService("a.pinggy.io", 443, "nokey"),
-            TunnelService("serveo.net", 22, "serveo"),
-        )
-
-        for (service in services) {
+            // Keep session alive
             try {
-                Log.i(TAG, "Trying ${service.host}:${service.port}...")
-                val url = tryService(jsch, service)
-                if (url != null) {
-                    publicUrl = url
-                    isConnected = true
-                    withContext(Dispatchers.Main) { onUrlChanged(url) }
-                    Log.i(TAG, "Public URL: $url")
-
-                    // Keep session alive
-                    try {
-                        while (session?.isConnected == true) {
-                            delay(5000)
-                        }
-                    } catch (_: CancellationException) {}
-
-                    // Cleanup
-                    isConnected = false
-                    publicUrl = ""
-                    try { session?.disconnect() } catch (_: Exception) {}
-                    session = null
-                    withContext(Dispatchers.Main) { onUrlChanged("") }
-                    return
+                while (session?.isConnected == true) {
+                    delay(5000)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "${service.host} failed: ${e.message}")
-            }
-            // Cleanup failed attempt
+            } catch (_: CancellationException) {}
+
+            // Cleanup
+            isConnected = false
+            publicUrl = ""
             try { session?.disconnect() } catch (_: Exception) {}
             session = null
+            withContext(Dispatchers.Main) { onUrlChanged("") }
+        } else {
+            Log.e(TAG, "All tunnel services failed")
         }
-
-        Log.e(TAG, "All tunnel services failed")
     }
 
-    private fun tryService(jsch: JSch, service: TunnelService): String? {
-        val session = jsch.getSession(service.user, service.host, service.port)
+    private fun tryServeo(): String? {
+        Log.i(TAG, "Trying serveo.net:22...")
+        return try {
+            val jsch = JSch()
+            // No key needed — serveo authenticates via keyboard-interactive
 
-        // Capture banner/auth messages — some services send URL here
-        val urlFromBanner = AtomicReference<String?>(null)
-        session.userInfo = object : UserInfo {
+            val session = jsch.getSession("airdeck", "serveo.net", 22)
+            configureSession(session)
+            session.setConfig("PreferredAuthentications", "keyboard-interactive,none")
+            session.connect(15000)
+            this.session = session
+            Log.i(TAG, "SSH connected to serveo.net")
+
+            connectTunnel(session, "serveo.net")
+        } catch (e: Exception) {
+            Log.w(TAG, "serveo.net failed: ${e.message}")
+            try { session?.disconnect() } catch (_: Exception) {}
+            session = null
+            null
+        }
+    }
+
+    private fun tryPinggy(): String? {
+        Log.i(TAG, "Trying a.pinggy.io:443...")
+        return try {
+            val jsch = JSch()
+            val keyPair = KeyPair.genKeyPair(jsch, KeyPair.RSA, 2048)
+            val privKey = ByteArrayOutputStream()
+            val pubKey = ByteArrayOutputStream()
+            keyPair.writePrivateKey(privKey)
+            keyPair.writePublicKey(pubKey, "airdeck")
+            jsch.addIdentity("tunnel", privKey.toByteArray(), pubKey.toByteArray(), null)
+            keyPair.dispose()
+
+            val session = jsch.getSession("nokey", "a.pinggy.io", 443)
+            configureSession(session)
+            session.setConfig("PreferredAuthentications", "publickey,none,keyboard-interactive,password")
+            session.setPassword("")
+            session.connect(15000)
+            this.session = session
+            Log.i(TAG, "SSH connected to a.pinggy.io")
+
+            connectTunnel(session, "a.pinggy.io")
+        } catch (e: Exception) {
+            Log.w(TAG, "a.pinggy.io failed: ${e.message}")
+            try { session?.disconnect() } catch (_: Exception) {}
+            session = null
+            null
+        }
+    }
+
+    private fun configureSession(session: Session) {
+        // Implement both UserInfo and UIKeyboardInteractive —
+        // serveo.net authenticates via keyboard-interactive (not publickey)
+        session.userInfo = object : UserInfo, UIKeyboardInteractive {
             override fun getPassphrase() = ""
             override fun getPassword() = ""
             override fun promptPassword(msg: String?) = true
             override fun promptPassphrase(msg: String?) = true
             override fun promptYesNo(msg: String?) = true
             override fun showMessage(msg: String?) {
-                msg?.let {
-                    Log.d(TAG, "banner> $it")
-                    extractUrl(it)?.let { url -> urlFromBanner.set(url) }
-                }
+                msg?.let { Log.d(TAG, "banner> $it") }
+            }
+            override fun promptKeyboardInteractive(
+                destination: String?, name: String?, instruction: String?,
+                prompt: Array<out String>?, echo: BooleanArray?
+            ): Array<String> {
+                // Serveo sends empty prompts — respond with empty strings
+                return Array(prompt?.size ?: 0) { "" }
             }
         }
-
         session.setConfig("StrictHostKeyChecking", "no")
         session.setConfig("ServerAliveInterval", "30")
         session.setConfig("ServerAliveCountMax", "3")
-        session.setConfig("PreferredAuthentications", "publickey,none,keyboard-interactive,password")
-        session.setPassword("")
         session.timeout = 15000
+    }
 
-        session.connect(15000)
-        this.session = session
-        Log.i(TAG, "SSH connected to ${service.host}")
-
-        // Check if URL came in banner
-        urlFromBanner.get()?.let { return it }
-
+    private fun connectTunnel(session: Session, serviceName: String): String? {
         // Step 1: Open shell channel with PTY BEFORE port forwarding
-        // This mirrors what `ssh -R ...` does: opens a session + requests forwarding
         val shellChannel = session.openChannel("shell") as ChannelShell
         shellChannel.setPty(true)
         shellChannel.setPtyType("xterm", 80, 24, 640, 480)
@@ -178,17 +195,17 @@ class SshTunnel(private val localPort: Int) {
         readerThread.isDaemon = true
         readerThread.start()
 
-        // Step 3: Request port forwarding — this triggers the server to output the URL
+        // Step 3: Request port forwarding — triggers the server to output the URL
         try {
             session.setPortForwardingR(0, "localhost", localPort)
             Log.d(TAG, "Port forwarding active (port 0 → localhost:$localPort)")
         } catch (e: Exception) {
-            Log.w(TAG, "Port 0 forwarding failed, trying port 80: ${e.message}")
+            Log.w(TAG, "Port 0 failed, trying port 80: ${e.message}")
             try {
                 session.setPortForwardingR(80, "localhost", localPort)
                 Log.d(TAG, "Port forwarding active (port 80 → localhost:$localPort)")
             } catch (e2: Exception) {
-                Log.e(TAG, "Port forwarding failed entirely: ${e2.message}")
+                Log.e(TAG, "Port forwarding failed: ${e2.message}")
                 shellChannel.disconnect()
                 return null
             }
@@ -196,59 +213,17 @@ class SshTunnel(private val localPort: Int) {
 
         // Step 4: Wait for URL from shell output
         readerThread.join(25_000)
-
-        var url = urlFromShell.get() ?: urlFromBanner.get()
-
-        // Step 5: If shell didn't produce URL, try exec channel as fallback
-        if (url == null) {
-            Log.d(TAG, "Shell channel didn't produce URL, trying exec channel...")
-            url = tryExecForUrl(session)
-        }
+        val url = urlFromShell.get()
 
         if (url == null) {
-            Log.w(TAG, "Could not capture URL from ${service.host}")
+            Log.w(TAG, "Could not capture URL from $serviceName")
             shellChannel.disconnect()
         }
 
         return url
     }
 
-    private fun tryExecForUrl(session: Session): String? {
-        return try {
-            val channel = session.openChannel("exec") as ChannelExec
-            // Get streams BEFORE connect
-            val inputStream: InputStream = channel.inputStream
-            val errStream: InputStream = channel.errStream
-            channel.setCommand("")
-            channel.connect(5000)
-
-            val buf = ByteArray(4096)
-            val deadline = System.currentTimeMillis() + 8_000
-
-            while (System.currentTimeMillis() < deadline) {
-                for (stream in listOf(inputStream, errStream)) {
-                    val avail = stream.available()
-                    if (avail > 0) {
-                        val n = stream.read(buf, 0, minOf(avail, buf.size))
-                        if (n > 0) {
-                            val text = String(buf, 0, n)
-                            Log.d(TAG, "exec> $text")
-                            extractUrl(text)?.let { return it }
-                        }
-                    }
-                }
-                Thread.sleep(200)
-            }
-            channel.disconnect()
-            null
-        } catch (e: Exception) {
-            Log.d(TAG, "Exec channel failed: ${e.message}")
-            null
-        }
-    }
-
     private fun extractUrl(text: String): String? {
-        // Find all URLs in the text
         val allUrls = Regex("https?://[a-zA-Z0-9._:/-]+")
             .findAll(text)
             .map { it.value.trimEnd('/') }
@@ -256,15 +231,18 @@ class SshTunnel(private val localPort: Int) {
 
         // Prefer tunnel URLs over dashboard/docs links
         val tunnelUrl = allUrls.firstOrNull { url ->
-            url.contains(".pinggy.link") ||
+            url.contains(".serveousercontent.com") ||
             url.contains(".serveo.net") ||
+            url.contains(".pinggy.link") ||
             url.contains(".localhost.run") ||
             url.contains(".lhr.life") ||
             url.contains(".ngrok")
         }
         if (tunnelUrl != null) {
             // Prefer HTTPS version if both exist
-            val https = allUrls.firstOrNull { it.startsWith("https://") && it.contains(tunnelUrl.substringAfter("://")) }
+            val https = allUrls.firstOrNull {
+                it.startsWith("https://") && it.contains(tunnelUrl.substringAfter("://"))
+            }
             return https ?: tunnelUrl
         }
 
