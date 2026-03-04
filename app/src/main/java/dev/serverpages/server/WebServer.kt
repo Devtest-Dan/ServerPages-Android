@@ -396,7 +396,7 @@ class WebServer(
                 "streamReady" to (capturing && (manifestExists || webrtcActive)),
                 "quality" to quality,
                 "camera" to camera,
-                "viewers" to getViewerCount(),
+                "viewers" to (getViewerCount() + webrtcPeers),
                 "tailscaleUrl" to tailscale,
                 "publicUrl" to publicUrlValue,
                 "webrtc" to webrtcActive,

@@ -60,12 +60,25 @@ class AirDeckWebRTC {
       };
 
       // Connection state monitoring
+      this._disconnectTimer = null;
       this.pc.onconnectionstatechange = () => {
         const state = this.pc ? this.pc.connectionState : 'null';
         console.log('[AirDeck] connectionState:', state);
         if (state === 'connected') {
+          clearTimeout(this._disconnectTimer);
+          this._disconnectTimer = null;
           this.onConnected();
-        } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+        } else if (state === 'disconnected') {
+          // Transient — wait 15s for recovery before giving up
+          if (!this._disconnectTimer) {
+            this._disconnectTimer = setTimeout(() => {
+              if (this.pc && this.pc.connectionState === 'disconnected') {
+                this.onDisconnected();
+              }
+            }, 15000);
+          }
+        } else if (state === 'failed' || state === 'closed') {
+          clearTimeout(this._disconnectTimer);
           this.onDisconnected();
         }
       };
@@ -139,6 +152,7 @@ class AirDeckWebRTC {
 
   stop() {
     this._closed = true;
+    clearTimeout(this._disconnectTimer);
     if (this.pc) {
       this.pc.close();
       this.pc = null;

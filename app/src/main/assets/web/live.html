@@ -300,9 +300,17 @@
             settle(() => resolve());
           },
           onDisconnected: () => {
-            console.warn('[AirDeck] P2P disconnected');
+            console.warn('[AirDeck] P2P disconnected — will reconnect');
             settle(() => reject(new Error('WebRTC disconnected')));
-            if (!streamerStopped) streamOffline();
+            // Auto-reconnect P2P (not full streamOffline)
+            if (!streamerStopped) {
+              statusText.textContent = 'Reconnecting P2P...';
+              overlay.textContent = 'Reconnecting...';
+              overlay.classList.remove('hidden');
+              cleanup();
+              clearTimeout(retryTimeout);
+              retryTimeout = setTimeout(startStream, 2000);
+            }
           },
           onError: (msg) => {
             console.warn('[AirDeck] P2P error:', msg);
@@ -456,7 +464,8 @@
         }
         const pubEl = document.getElementById('publicUrlInfo');
         if (data.publicUrl) {
-          pubEl.innerHTML = 'Share: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>';
+          pubEl.innerHTML = 'Share: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>'
+            + ' <button id="copyBtn" onclick="copyUrl(\'' + data.publicUrl.replace(/'/g, "\\'") + '\')" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--accent);cursor:pointer;padding:4px 10px;font-size:12px;font-weight:600;vertical-align:middle;">Copy</button>';
           pubEl.style.display = '';
         }
         if (data.capturing === false) {
@@ -577,6 +586,33 @@
         });
         await loadChat();
       } catch (e) {}
+    }
+
+    function copyUrl(url) {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById('copyBtn');
+        if (btn) {
+          btn.textContent = 'Copied!';
+          btn.style.color = '#66bb6a';
+          setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1500);
+        }
+      }).catch(() => {
+        // Fallback for non-HTTPS contexts
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        const btn = document.getElementById('copyBtn');
+        if (btn) {
+          btn.textContent = 'Copied!';
+          btn.style.color = '#66bb6a';
+          setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1500);
+        }
+      });
     }
 
     function escapeHtml(str) {

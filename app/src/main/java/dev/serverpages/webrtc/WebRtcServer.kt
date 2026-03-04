@@ -161,15 +161,23 @@ class WebRtcServer(private val context: Context) {
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.d(TAG, "[$viewerId] ICE connection: $state")
-                if (state == PeerConnection.IceConnectionState.CONNECTED) {
-                    wasConnected.set(true)
-                }
-                if (state == PeerConnection.IceConnectionState.DISCONNECTED ||
-                    state == PeerConnection.IceConnectionState.FAILED) {
-                    // Only clean up if we were previously connected (not during initial setup)
-                    if (wasConnected.get()) {
-                        removePeer(viewerId)
+                when (state) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        wasConnected.set(true)
                     }
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        // Transient — ICE can recover. Do NOT remove peer.
+                        Log.w(TAG, "[$viewerId] ICE disconnected (transient, keeping peer)")
+                    }
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        // Terminal — clean up only if previously connected
+                        if (wasConnected.get()) {
+                            Log.w(TAG, "[$viewerId] ICE failed after connection, removing peer")
+                            removePeer(viewerId)
+                        }
+                    }
+                    else -> {}
                 }
             }
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}

@@ -255,7 +255,7 @@ class CaptureService : LifecycleService() {
     fun getPublicUrl(): String = publicUrl
     fun getAccessCode(): String = accessCodes.firstOrNull()?.code ?: "----"
     fun getCodes(): List<CodeInfo> = accessCodes
-    fun getViewerCount(): Int = webServer?.getViewerCount() ?: 0
+    fun getViewerCount(): Int = (webServer?.getViewerCount() ?: 0) + (webRtcServer?.getPeerCount() ?: 0)
     fun getWebRtcPeerCount(): Int = webRtcServer?.getPeerCount() ?: 0
     fun isWebRtcActive(): Boolean = webRtcServer?.isRunning ?: false
     fun isAudioEnabled(): Boolean = webRtcServer?.isAudioEnabled() ?: false

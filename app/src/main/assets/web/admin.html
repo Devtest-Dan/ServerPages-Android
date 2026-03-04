@@ -206,7 +206,8 @@
         }
         const pubEl = document.getElementById('publicUrlInfo');
         if (data.publicUrl) {
-          pubEl.innerHTML = 'Public: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>';
+          pubEl.innerHTML = 'Public: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>'
+            + ' <button id="copyBtn" onclick="copyUrl(\'' + data.publicUrl.replace(/'/g, "\\'") + '\')" style="background:#e040fb;border:none;border-radius:6px;color:#fff;cursor:pointer;padding:4px 12px;font-size:12px;font-weight:700;vertical-align:middle;margin-left:4px;">Copy</button>';
           pubEl.style.display = '';
         } else {
           pubEl.style.display = 'none';
@@ -242,6 +243,19 @@
         btn.textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
       } catch (e) {}
       btn.disabled = false;
+    }
+
+    function copyUrl(url) {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById('copyBtn');
+        if (btn) { btn.textContent = 'Copied!'; btn.style.background = '#66bb6a'; setTimeout(() => { btn.textContent = 'Copy'; btn.style.background = '#e040fb'; }, 1500); }
+      }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+        const btn = document.getElementById('copyBtn');
+        if (btn) { btn.textContent = 'Copied!'; btn.style.background = '#66bb6a'; setTimeout(() => { btn.textContent = 'Copy'; btn.style.background = '#e040fb'; }, 1500); }
+      });
     }
 
     startStream();

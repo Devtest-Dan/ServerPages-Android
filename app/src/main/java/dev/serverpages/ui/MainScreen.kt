@@ -351,12 +351,41 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
             }
 
             if (state.publicUrl.isNotEmpty()) {
+                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                var copied by remember { mutableStateOf(false) }
                 Spacer(Modifier.height(12.dp))
                 Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF111111), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = "Public URL (Internet)", color = Color(0xFF42A5F5), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(2.dp))
-                        Text(text = state.publicUrl, color = AccentColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "Public URL (Internet)", color = Color(0xFF42A5F5), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(2.dp))
+                            Text(text = state.publicUrl, color = AccentColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(state.publicUrl))
+                                copied = true
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (copied) Color(0xFF66BB6A) else Color(0xFFE040FB)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = if (copied) "Copied!" else "Copy",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                        LaunchedEffect(copied) {
+                            if (copied) {
+                                kotlinx.coroutines.delay(1500)
+                                copied = false
+                            }
+                        }
                     }
                 }
             }
