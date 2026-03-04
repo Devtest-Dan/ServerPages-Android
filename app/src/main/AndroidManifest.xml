@@ -39,7 +39,7 @@
         android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="ServerPages"
+        android:label="AirDeck"
         android:supportsRtl="true"
         android:theme="@style/Theme.ServerPages">
 

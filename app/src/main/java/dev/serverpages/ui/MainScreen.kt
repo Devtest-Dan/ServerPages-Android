@@ -231,7 +231,7 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
 
         Spacer(Modifier.height(24.dp))
 
-        Text(text = "ServerPages", color = AccentColor, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text(text = "AirDeck", color = AccentColor, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
             text = when {

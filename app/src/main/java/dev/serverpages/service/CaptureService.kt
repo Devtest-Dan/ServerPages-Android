@@ -405,7 +405,7 @@ class CaptureService : LifecycleService() {
         )
 
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("ServerPages")
+            .setContentTitle("AirDeck")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .setContentIntent(pendingIntent)
@@ -423,7 +423,7 @@ class CaptureService : LifecycleService() {
     private fun acquireWakeLock() {
         if (wakeLock != null) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ServerPages::CaptureWakeLock")
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AirDeck::CaptureWakeLock")
         wakeLock!!.acquire()
         Log.d(TAG, "WakeLock acquired")
     }
@@ -445,7 +445,7 @@ class CaptureService : LifecycleService() {
         } else {
             WifiManager.WIFI_MODE_FULL_HIGH_PERF
         }
-        wifiLock = wm.createWifiLock(mode, "ServerPages::WifiLock")
+        wifiLock = wm.createWifiLock(mode, "AirDeck::WifiLock")
         wifiLock!!.acquire()
         Log.d(TAG, "WifiLock acquired")
     }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin — ServerPages</title>
+  <title>Admin — AirDeck</title>
   <link rel="stylesheet" href="/style.css">
   <style>
     .admin-bar {
@@ -52,7 +52,7 @@
 <body>
   <div class="admin-bar">ADMIN — No authentication required</div>
   <div class="header">
-    <h1>ServerPages</h1>
+    <h1>AirDeck</h1>
     <span class="status-dot" id="statusDot"></span>
     <nav>
       <a href="/admin" class="active">Monitor</a>
@@ -78,6 +78,7 @@
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
       <span class="viewer-count" id="viewers">0 viewers</span>
+      <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600;"></span>
       <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
       <button id="cameraBtn" onclick="switchCamera()" style="margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
     </div>
@@ -161,14 +162,22 @@
       }
     }
 
+    let streamerStopped = false;
+
     function streamOffline() {
       overlay.classList.remove('hidden');
-      overlay.textContent = 'Stream offline — retrying in 5s...';
       statusDot.classList.remove('live');
       liveBadge.style.display = 'none';
-      statusText.textContent = 'Reconnecting...';
-      clearTimeout(retryTimeout);
-      retryTimeout = setTimeout(startStream, 5000);
+      if (streamerStopped) {
+        overlay.textContent = 'Stream stopped by streamer';
+        statusText.textContent = 'Stopped';
+        clearTimeout(retryTimeout);
+      } else {
+        overlay.textContent = 'Stream offline — retrying in 5s...';
+        statusText.textContent = 'Reconnecting...';
+        clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(startStream, 5000);
+      }
     }
 
     async function updateStatus() {
@@ -185,6 +194,13 @@
           viewersEl.textContent = data.viewers === 1 ? '1 viewer' : `${data.viewers} viewers`;
           viewersEl.style.color = data.viewers > 0 ? '#66bb6a' : '';
         }
+        const pubEl = document.getElementById('publicUrlInfo');
+        if (data.publicUrl) {
+          pubEl.innerHTML = 'Public: <a href="' + data.publicUrl + '" target="_blank" style="color:#42a5f5">' + data.publicUrl + '</a>';
+          pubEl.style.display = '';
+        } else {
+          pubEl.style.display = 'none';
+        }
         const tsEl = document.getElementById('tailscaleInfo');
         if (data.tailscaleUrl) {
           tsEl.textContent = 'Tailscale: ' + data.tailscaleUrl;
@@ -192,6 +208,14 @@
         }
         if (data.camera) {
           document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
+        }
+        // Handle streamer stop/start
+        if (data.capturing === false) {
+          streamerStopped = true;
+          if (hls) { hls.destroy(); hls = null; }
+          streamOffline();
+        } else if (data.capturing === true && streamerStopped) {
+          streamerStopped = false;
         }
         if (data.streamReady && !hls && !video.src) {
           startStream();
