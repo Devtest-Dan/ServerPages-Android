@@ -64,6 +64,7 @@ class CaptureService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var projectionData: Intent? = null
+    private var mediaProjection: android.media.projection.MediaProjection? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
     private var tailscaleHostname: String = ""
@@ -143,6 +144,8 @@ class CaptureService : LifecycleService() {
     override fun onDestroy() {
         stopTunnel()
         stopCapture()  // Stops WebRTC + ScreenCapture
+        try { mediaProjection?.stop() } catch (_: Exception) {}
+        mediaProjection = null
         stopWebServer()
         releaseWifiLock()
         releaseWakeLock()
@@ -190,9 +193,17 @@ class CaptureService : LifecycleService() {
     private fun startCapture(resultCode: Int, data: Intent?) {
         stopCapture()
 
-        // Store projection data for screen capture switching
+        // Create MediaProjection immediately while token is fresh
         if (data != null) {
             projectionData = data
+            try {
+                val pm = getSystemService(MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                mediaProjection = pm.getMediaProjection(resultCode, data)
+                Log.i(TAG, "MediaProjection created at startup — screen capture available")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to create MediaProjection — screen capture unavailable", e)
+                mediaProjection = null
+            }
         }
 
         webRtcServer = WebRtcServer(this).also { rtc ->
@@ -209,6 +220,8 @@ class CaptureService : LifecycleService() {
         webRtcServer = null
         screenCapture?.stop()
         screenCapture = null
+        // Don't stop mediaProjection here — it's reusable across source switches
+        // It's only cleaned up in onDestroy()
     }
 
     fun toggleCapture() {
@@ -339,8 +352,8 @@ class CaptureService : LifecycleService() {
         val rtc = webRtcServer ?: return false
         if (mode == rtc.currentSource) return false
         if (mode == "screen") {
-            val data = projectionData ?: return false
-            rtc.switchToScreen(data)
+            val proj = mediaProjection ?: return false
+            rtc.switchToScreen(proj)
             return true
         }
         if (mode == "camera") {
@@ -351,7 +364,7 @@ class CaptureService : LifecycleService() {
     }
 
     fun getCurrentSource(): String = webRtcServer?.currentSource ?: "camera"
-    fun isScreenAvailable(): Boolean = projectionData != null
+    fun isScreenAvailable(): Boolean = mediaProjection != null
 
     // ─── Internet Tunnel ──────────────────────────────────────────────────────
 

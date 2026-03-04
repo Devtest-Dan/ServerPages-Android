@@ -1,10 +1,16 @@
 package dev.serverpages.webrtc
 
 import android.content.Context
-import android.content.Intent
+import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
-import kotlinx.coroutines.*
 import org.webrtc.*
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -40,12 +46,23 @@ class WebRtcServer(private val context: Context) {
     private var factory: PeerConnectionFactory? = null
     private var eglBase: EglBase? = null
     private var capturer: Camera2Capturer? = null
-    private var screenCapturer: ScreenCapturerAndroid? = null
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
     private var localVideoTrack: VideoTrack? = null
     private var localAudioTrack: AudioTrack? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
+
+    // Screen capture via ImageReader (reliable frame delivery)
+    private var screenProjection: MediaProjection? = null
+    private var screenVirtualDisplay: VirtualDisplay? = null
+    private var screenImageReader: ImageReader? = null
+    private var screenThread: HandlerThread? = null
+    private var screenHandler: Handler? = null
+    private var screenFrameCount = 0
+    @Volatile private var cachedScreenY: ByteBuffer? = null
+    @Volatile private var cachedScreenU: ByteBuffer? = null
+    @Volatile private var cachedScreenV: ByteBuffer? = null
+    private var screenRepeatTimer: java.util.Timer? = null
 
     private val peers = ConcurrentHashMap<String, PeerConnection>()
     private var useFrontCamera = true
@@ -300,26 +317,177 @@ class WebRtcServer(private val context: Context) {
 
     fun getPeerCount(): Int = peers.size
 
-    fun switchToScreen(data: Intent) {
+    fun switchToScreen(projection: MediaProjection) {
+        val f = factory ?: run { Log.e(TAG, "Factory not initialized"); return }
+
+        // Stop camera capturer
         try { capturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping camera capturer", e) }
         capturer?.dispose()
         capturer = null
 
-        screenCapturer = ScreenCapturerAndroid(data, object : android.media.projection.MediaProjection.Callback() {
+        // Save old chain to dispose after replacement
+        val oldTrack = localVideoTrack
+        val oldSource = videoSource
+        val oldHelper = surfaceTextureHelper
+
+        // Create fresh video source (isScreencast=true for encoding hints)
+        val newSource = f.createVideoSource(true)
+        newSource.capturerObserver.onCapturerStarted(true)
+
+        // ImageReader for reliable frame delivery from VirtualDisplay
+        screenThread = HandlerThread("ScreenCaptureThread").apply { start() }
+        screenHandler = Handler(screenThread!!.looper)
+
+        val w = captureWidth
+        val h = captureHeight
+
+        // VirtualDisplay only produces frames on screen change — we need to
+        // cache the last I420 data and re-push it at target FPS for continuous streaming
+        screenImageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+        screenFrameCount = 0
+        // Pre-allocate direct ByteBuffers for I420 caching
+        val yBuf = ByteBuffer.allocateDirect(w * h)
+        val uBuf = ByteBuffer.allocateDirect((w / 2) * (h / 2))
+        val vBuf = ByteBuffer.allocateDirect((w / 2) * (h / 2))
+        screenImageReader!!.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            screenFrameCount++
+            if (screenFrameCount <= 5 || screenFrameCount % 60 == 0) {
+                Log.i(TAG, "Screen frame #$screenFrameCount (new from VirtualDisplay)")
+            }
+            try {
+                val plane = image.planes[0]
+                val buffer = plane.buffer
+                val rowStride = plane.rowStride
+
+                // Convert RGBA to I420 into direct ByteBuffers
+                synchronized(this@WebRtcServer) {
+                    yBuf.clear(); uBuf.clear(); vBuf.clear()
+                    rgbaToI420Direct(buffer, rowStride, yBuf, uBuf, vBuf, w, h)
+                    yBuf.flip(); uBuf.flip(); vBuf.flip()
+                    cachedScreenY = yBuf
+                    cachedScreenU = uBuf
+                    cachedScreenV = vBuf
+                }
+
+                // Push to WebRTC
+                val i420Buffer = JavaI420Buffer.wrap(w, h,
+                    yBuf.slice(), w,
+                    uBuf.slice(), w / 2,
+                    vBuf.slice(), w / 2, null)
+                val videoFrame = VideoFrame(i420Buffer, 0, System.nanoTime())
+                newSource.capturerObserver.onFrameCaptured(videoFrame)
+                videoFrame.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Screen frame error", e)
+            } finally {
+                image.close()
+            }
+        }, screenHandler)
+
+        // Use the live MediaProjection created at startup (not stale Intent data)
+        screenProjection = projection
+        screenProjection!!.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 Log.w(TAG, "MediaProjection stopped externally")
             }
-        })
-        screenCapturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
-        screenCapturer!!.startCapture(captureWidth, captureHeight, captureFps)
+        }, screenHandler)
+
+        val metrics = context.resources.displayMetrics
+        screenVirtualDisplay = screenProjection!!.createVirtualDisplay(
+            "AirDeck_Screen", w, h,
+            metrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            screenImageReader!!.surface,
+            null, screenHandler
+        )
+        Log.i(TAG, "VirtualDisplay created: ${w}x${h}@${metrics.densityDpi}dpi")
+
+        videoSource = newSource
+        localVideoTrack = f.createVideoTrack(VIDEO_TRACK_ID, videoSource)
+        localVideoTrack!!.setEnabled(true)
+
+        // Replace track on all existing peer senders (no renegotiation needed)
+        replaceVideoTrackOnPeers(localVideoTrack!!)
+
+        // Start a timer that re-pushes the last frame at ~10fps to keep the stream alive
+        // (VirtualDisplay only sends frames when screen content changes)
+        val src = newSource
+        screenRepeatTimer = java.util.Timer("ScreenRepeat").also { timer ->
+            timer.scheduleAtFixedRate(object : java.util.TimerTask() {
+                override fun run() {
+                    try {
+                        synchronized(this@WebRtcServer) {
+                            val y = cachedScreenY ?: return
+                            val u = cachedScreenU ?: return
+                            val v = cachedScreenV ?: return
+                            val buf = JavaI420Buffer.wrap(w, h,
+                                y.slice(), w,
+                                u.slice(), w / 2,
+                                v.slice(), w / 2, null)
+                            val frame = VideoFrame(buf, 0, System.nanoTime())
+                            src.capturerObserver.onFrameCaptured(frame)
+                            frame.release()
+                        }
+                    } catch (_: Exception) {}
+                }
+            }, 100L, 100L)  // 10fps repeat
+        }
+
+        // Dispose old camera chain
+        oldTrack?.dispose()
+        oldSource?.dispose()
+        oldHelper?.dispose()
+        surfaceTextureHelper = null
+
         currentSource = "screen"
-        Log.i(TAG, "Switched to screen capture: ${captureWidth}x${captureHeight}@${captureFps}fps")
+        Log.i(TAG, "Switched to screen capture: ${w}x${h} (repeat at 10fps)")
+    }
+
+    /**
+     * Convert RGBA pixels from ImageReader plane to I420 direct ByteBuffers for WebRTC.
+     * Buffers must be cleared before calling; will be filled with data (position at end).
+     */
+    private fun rgbaToI420Direct(
+        rgba: ByteBuffer, rowStride: Int,
+        yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
+        width: Int, height: Int
+    ) {
+        for (y in 0 until height) {
+            val rowOff = y * rowStride
+            for (x in 0 until width) {
+                val px = rowOff + x * 4
+                val r = rgba.get(px).toInt() and 0xFF
+                val g = rgba.get(px + 1).toInt() and 0xFF
+                val b = rgba.get(px + 2).toInt() and 0xFF
+
+                // BT.601 full-range
+                val yVal = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
+                yBuf.put(yVal.coerceIn(0, 255).toByte())
+
+                if (y % 2 == 0 && x % 2 == 0) {
+                    val uVal = ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
+                    val vVal = ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
+                    uBuf.put(uVal.coerceIn(0, 255).toByte())
+                    vBuf.put(vVal.coerceIn(0, 255).toByte())
+                }
+            }
+        }
     }
 
     fun switchToCamera() {
-        try { screenCapturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping screen capturer", e) }
-        screenCapturer?.dispose()
-        screenCapturer = null
+        val f = factory ?: run { Log.e(TAG, "Factory not initialized"); return }
+
+        // Stop screen capture
+        stopScreenCapture()
+
+        // Save old chain
+        val oldTrack = localVideoTrack
+        val oldSource = videoSource
+
+        // Create fresh video chain — isScreencast=false for camera
+        surfaceTextureHelper = SurfaceTextureHelper.create("WebRtcCaptureThread", eglBase!!.eglBaseContext)
+        videoSource = f.createVideoSource(false)
 
         val cameraEnumerator = Camera2Enumerator(context)
         val cameraName = findCamera(cameraEnumerator, useFrontCamera)
@@ -328,8 +496,53 @@ class WebRtcServer(private val context: Context) {
         capturer = Camera2Capturer(context, cameraName, null)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(captureWidth, captureHeight, captureFps)
+
+        localVideoTrack = f.createVideoTrack(VIDEO_TRACK_ID, videoSource)
+        localVideoTrack!!.setEnabled(true)
+
+        // Replace track on all existing peer senders
+        replaceVideoTrackOnPeers(localVideoTrack!!)
+
+        // Dispose old chain
+        oldTrack?.dispose()
+        oldSource?.dispose()
+
         currentSource = "camera"
         Log.i(TAG, "Switched to camera: ${captureWidth}x${captureHeight}@${captureFps}fps, front=$useFrontCamera")
+    }
+
+    private fun stopScreenCapture() {
+        screenRepeatTimer?.cancel()
+        screenRepeatTimer = null
+        synchronized(this) {
+            cachedScreenY = null
+            cachedScreenU = null
+            cachedScreenV = null
+        }
+        screenVirtualDisplay?.release()
+        screenVirtualDisplay = null
+        screenImageReader?.close()
+        screenImageReader = null
+        // Don't stop screenProjection — it's owned by CaptureService and reusable
+        screenProjection = null
+        screenThread?.quitSafely()
+        screenThread = null
+        screenHandler = null
+    }
+
+    private fun replaceVideoTrackOnPeers(newTrack: VideoTrack) {
+        for ((id, pc) in peers) {
+            try {
+                for (sender in pc.senders) {
+                    if (sender.track()?.kind() == "video") {
+                        sender.setTrack(newTrack, false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "[$id] Failed to replace video track", e)
+            }
+        }
+        Log.d(TAG, "Replaced video track on ${peers.size} peers")
     }
 
     fun switchCamera() {
@@ -374,13 +587,7 @@ class WebRtcServer(private val context: Context) {
         capturer?.dispose()
         capturer = null
 
-        try {
-            screenCapturer?.stopCapture()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping screen capturer", e)
-        }
-        screenCapturer?.dispose()
-        screenCapturer = null
+        stopScreenCapture()
         currentSource = "camera"
 
         localVideoTrack?.dispose()
