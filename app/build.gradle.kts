@@ -67,4 +67,5 @@ dependencies {
     implementation(libs.nanohttpd)
     implementation(libs.gson)
     implementation(libs.jsch)
+    implementation(libs.webrtc)
 }

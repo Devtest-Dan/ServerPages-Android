@@ -6,6 +6,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import fi.iki.elonen.NanoHTTPD
 import dev.serverpages.capture.QualityPreset
+import dev.serverpages.webrtc.WebRtcServer
 import java.io.File
 import java.io.FileInputStream
 import java.io.PipedInputStream
@@ -45,6 +46,7 @@ class WebServer(
     var getCameraFacing: (() -> String)? = null
     var getTailscaleUrl: (() -> String)? = null
     var getPublicUrl: (() -> String)? = null
+    var getWebRtcServer: (() -> WebRtcServer?)? = null
 
     // Multi-code auth
     var accessCodes: List<CodeInfo> = emptyList()
@@ -100,6 +102,10 @@ class WebServer(
                 uri == "/admin/api/download-folder" && method == Method.GET ->
                     handleDownloadFolder(session)
 
+                // --- Admin WebRTC status (no auth) ---
+                uri == "/admin/api/webrtc/status" && method == Method.GET ->
+                    handleWebRtcStatus()
+
                 // --- Admin chat APIs (no auth) ---
                 uri == "/admin/api/codes" && method == Method.GET ->
                     handleAdminCodes()
@@ -126,6 +132,16 @@ class WebServer(
                         uri == "/api/status" && method == Method.GET -> handleStatus()
                         uri == "/api/quality" && method == Method.POST -> handleQuality(session)
                         uri == "/api/camera" && method == Method.POST -> handleCameraSwitch()
+
+                        // WebRTC signaling
+                        uri == "/api/webrtc/status" && method == Method.GET ->
+                            handleWebRtcStatus()
+                        uri == "/api/webrtc/offer" && method == Method.POST ->
+                            handleWebRtcOffer(session, clientIp)
+                        uri == "/api/webrtc/hangup" && method == Method.POST ->
+                            handleWebRtcHangup(session)
+                        uri == "/webrtc.js" ->
+                            serveAsset("web/webrtc.js", "application/javascript")
 
                         // Viewer chat APIs
                         uri == "/api/chat/send" && method == Method.POST ->
@@ -369,16 +385,22 @@ class WebServer(
         val camera = getCameraFacing?.invoke() ?: "back"
         val publicUrlValue = getPublicUrl?.invoke() ?: ""
 
+        val webrtcServer = getWebRtcServer?.invoke()
+        val webrtcActive = webrtcServer?.isRunning ?: false
+        val webrtcPeers = webrtcServer?.getPeerCount() ?: 0
+
         return jsonResponse(
             Response.Status.OK, mapOf(
                 "capturing" to capturing,
                 "uptime" to uptimeSec,
-                "streamReady" to (capturing && manifestExists),
+                "streamReady" to (capturing && (manifestExists || webrtcActive)),
                 "quality" to quality,
                 "camera" to camera,
                 "viewers" to getViewerCount(),
                 "tailscaleUrl" to tailscale,
-                "publicUrl" to publicUrlValue
+                "publicUrl" to publicUrlValue,
+                "webrtc" to webrtcActive,
+                "webrtcPeers" to webrtcPeers
             )
         )
     }
@@ -613,6 +635,58 @@ class WebServer(
         } catch (e: Exception) {
             newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Asset not found: $assetPath")
         }
+    }
+
+    // --- WebRTC Signaling ---
+
+    private fun handleWebRtcStatus(): Response {
+        val webrtcServer = getWebRtcServer?.invoke()
+        val active = webrtcServer?.isRunning ?: false
+        return jsonResponse(
+            Response.Status.OK, mapOf(
+                "webrtc" to active,
+                "peers" to (webrtcServer?.getPeerCount() ?: 0),
+                "iceServers" to WebRtcServer.ICE_SERVER_URLS.map { mapOf("urls" to it) }
+            )
+        )
+    }
+
+    private fun handleWebRtcOffer(session: IHTTPSession, clientIp: String): Response {
+        val webrtcServer = getWebRtcServer?.invoke()
+            ?: return jsonResponse(Response.Status.SERVICE_UNAVAILABLE, mapOf("error" to "WebRTC not available"))
+
+        val body = HashMap<String, String>()
+        try { session.parseBody(body) } catch (_: Exception) {}
+        val postData = body["postData"] ?: body["content"] ?: ""
+        val json = try { gson.fromJson(postData, com.google.gson.JsonObject::class.java) } catch (_: Exception) { null }
+
+        val sdpOffer = json?.get("sdp")?.asString
+            ?: return jsonResponse(Response.Status.BAD_REQUEST, mapOf("error" to "Missing sdp"))
+
+        // Use clientIp + timestamp as viewer ID for uniqueness
+        val viewerId = "$clientIp-${System.currentTimeMillis()}"
+
+        val answerSdp = webrtcServer.handleOffer(viewerId, sdpOffer)
+            ?: return jsonResponse(Response.Status.INTERNAL_ERROR, mapOf("error" to "Failed to create answer"))
+
+        // Track this viewer's peer ID in the session for hangup
+        return jsonResponse(Response.Status.OK, mapOf("sdp" to answerSdp, "viewerId" to viewerId))
+    }
+
+    private fun handleWebRtcHangup(session: IHTTPSession): Response {
+        val webrtcServer = getWebRtcServer?.invoke()
+            ?: return jsonResponse(Response.Status.OK, mapOf("ok" to true))
+
+        val body = HashMap<String, String>()
+        try { session.parseBody(body) } catch (_: Exception) {}
+        val postData = body["postData"] ?: body["content"] ?: ""
+        val json = try { gson.fromJson(postData, com.google.gson.JsonObject::class.java) } catch (_: Exception) { null }
+
+        val viewerId = json?.get("viewerId")?.asString
+        if (viewerId != null) {
+            webrtcServer.removePeer(viewerId)
+        }
+        return jsonResponse(Response.Status.OK, mapOf("ok" to true))
     }
 
     // --- Helpers ---

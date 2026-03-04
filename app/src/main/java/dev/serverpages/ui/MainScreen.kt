@@ -1,8 +1,5 @@
 package dev.serverpages.ui
 
-import android.graphics.SurfaceTexture
-import android.view.Surface
-import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -25,6 +22,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import org.webrtc.EglBase
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 import dev.serverpages.server.ChatMessage
 import dev.serverpages.server.CodeInfo
 import dev.serverpages.server.ConversationSummary
@@ -316,7 +316,7 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
                 )
             }
 
-            // Camera preview
+            // Camera preview (WebRTC SurfaceViewRenderer)
             if (state.capturing) {
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -328,30 +328,25 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
                     shape = RoundedCornerShape(12.dp), color = Color.Black,
                     modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f)
                 ) {
-                    DisposableEffect(Unit) {
-                        onDispose { CaptureService.instance?.setPreviewSurface(null) }
-                    }
-                    AndroidView(
-                        factory = { ctx ->
-                            TextureView(ctx).apply {
-                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                        CaptureService.instance?.setPreviewSurface(Surface(st))
-                                        applyCenterCrop(this@apply, w, h)
-                                    }
-                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                                        applyCenterCrop(this@apply, w, h)
-                                    }
-                                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                        CaptureService.instance?.setPreviewSurface(null)
-                                        return true
-                                    }
-                                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    val eglBase = CaptureService.instance?.getEglBase()
+                    if (eglBase != null) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).apply {
+                                    init(eglBase.eglBaseContext, null)
+                                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                                    setMirror(true) // Front camera default
+                                    setEnableHardwareScaler(true)
+                                    CaptureService.instance?.setPreviewRenderer(this)
                                 }
+                            },
+                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
+                            onRelease = { renderer ->
+                                CaptureService.instance?.removeRendererSink(renderer)
+                                renderer.release()
                             }
-                        },
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
-                    )
+                        )
+                    }
                 }
             }
 
@@ -771,37 +766,6 @@ private fun ChatDetailScreen(
             }
         }
     }
-}
-
-/**
- * Center-crop transform for TextureView — mimics camera app preview.
- * Camera outputs landscape (e.g. 1280x720); view is portrait (9:16).
- * Scales up to fill the view without distortion, cropping the excess.
- */
-private fun applyCenterCrop(textureView: TextureView, viewW: Int, viewH: Int) {
-    // Camera outputs landscape — assume 16:9 sensor
-    val camW = 1280f
-    val camH = 720f
-
-    val viewAspect = viewW.toFloat() / viewH
-    val camAspect = camW / camH
-
-    val matrix = android.graphics.Matrix()
-    val scaleX: Float
-    val scaleY: Float
-
-    if (viewAspect < camAspect) {
-        // View is taller — scale to match height, crop sides
-        scaleY = 1f
-        scaleX = (camAspect / viewAspect)
-    } else {
-        // View is wider — scale to match width, crop top/bottom
-        scaleX = 1f
-        scaleY = (viewAspect / camAspect)
-    }
-
-    matrix.setScale(scaleX, scaleY, viewW / 2f, viewH / 2f)
-    textureView.setTransform(matrix)
 }
 
 private fun formatTime(timestamp: Long): String {

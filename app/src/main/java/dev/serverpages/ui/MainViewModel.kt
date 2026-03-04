@@ -26,7 +26,10 @@ data class ServiceState(
     val accessCode: String = "",
     val codes: List<CodeInfo> = emptyList(),
     val viewerCount: Int = 0,
-    val setupStep: SetupStep = SetupStep.DONE
+    val setupStep: SetupStep = SetupStep.DONE,
+    val webrtcActive: Boolean = false,
+    val webrtcPeers: Int = 0,
+    val audioEnabled: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -62,7 +65,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 accessCode = service.getAccessCode(),
                 codes = service.getCodes(),
                 viewerCount = service.getViewerCount(),
-                setupStep = if (service.isServerRunning()) SetupStep.DONE else currentStep
+                setupStep = if (service.isServerRunning()) SetupStep.DONE else currentStep,
+                webrtcActive = service.isWebRtcActive(),
+                webrtcPeers = service.getWebRtcPeerCount(),
+                audioEnabled = service.isAudioEnabled()
             )
         } else {
             ServiceState(setupStep = currentStep)

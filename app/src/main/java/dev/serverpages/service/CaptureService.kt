@@ -21,7 +21,10 @@ import dev.serverpages.server.CodeInfo
 import dev.serverpages.server.ConversationSummary
 import dev.serverpages.server.WebServer
 import dev.serverpages.tunnel.SshTunnel
+import dev.serverpages.webrtc.WebRtcServer
 import kotlinx.coroutines.*
+import org.webrtc.EglBase
+import org.webrtc.SurfaceViewRenderer
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -56,6 +59,7 @@ class CaptureService : LifecycleService() {
 
     private var webServer: WebServer? = null
     private var screenCapture: ScreenCapture? = null
+    private var webRtcServer: WebRtcServer? = null
     private var sshTunnel: SshTunnel? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -137,7 +141,7 @@ class CaptureService : LifecycleService() {
 
     override fun onDestroy() {
         stopTunnel()
-        stopCapture()
+        stopCapture()  // Stops WebRTC + ScreenCapture
         stopWebServer()
         releaseWifiLock()
         releaseWakeLock()
@@ -153,13 +157,14 @@ class CaptureService : LifecycleService() {
         if (webServer != null) return
 
         webServer = WebServer(this, hlsDir, PORT).apply {
-            getCaptureState = { screenCapture?.isCapturing ?: false }
+            getCaptureState = { webRtcServer?.isRunning ?: (screenCapture?.isCapturing ?: false) }
             getCurrentQuality = { currentQuality.label }
             getCameraFacing = { this@CaptureService.getCameraLabel() }
             getTailscaleUrl = { tailscaleHostname }
             getPublicUrl = { publicUrl }
             onQualityChange = { label -> changeQuality(label) }
             onCameraSwitch = { switchCamera() }
+            getWebRtcServer = { this@CaptureService.webRtcServer }
             this.accessCodes = this@CaptureService.accessCodes
         }
 
@@ -182,31 +187,36 @@ class CaptureService : LifecycleService() {
     // ─── Capture ───────────────────────────────────────────────────────────
 
     private fun startCapture(resultCode: Int, data: Intent?) {
-        if (screenCapture?.isCapturing == true) {
-            screenCapture?.stop()
-        }
+        stopCapture()
 
-        screenCapture = ScreenCapture(this, hlsDir)
-        // Use camera mode — bypasses MediaProjection
-        screenCapture!!.startCamera(currentQuality, serviceScope)
+        webRtcServer = WebRtcServer(this).also { rtc ->
+            rtc.initialize()
+            val preset = currentQuality
+            rtc.startCamera(preset.width, preset.height, preset.fps)
+        }
 
         updateNotification(buildLiveNotificationText())
     }
 
     private fun stopCapture() {
+        webRtcServer?.stop()
+        webRtcServer = null
         screenCapture?.stop()
         screenCapture = null
     }
 
     fun toggleCapture() {
-        if (screenCapture?.isCapturing == true) {
+        if (webRtcServer?.isRunning == true) {
             stopCapture()
             val ip = getLocalIpAddress()
             updateNotification("Server on http://$ip:$PORT — camera off")
             Log.i(TAG, "Camera stopped by user")
         } else {
-            screenCapture = ScreenCapture(this, hlsDir)
-            screenCapture!!.startCamera(currentQuality, serviceScope)
+            webRtcServer = WebRtcServer(this).also { rtc ->
+                rtc.initialize()
+                val preset = currentQuality
+                rtc.startCamera(preset.width, preset.height, preset.fps)
+            }
             updateNotification(buildLiveNotificationText())
             Log.i(TAG, "Camera started by user")
         }
@@ -217,10 +227,10 @@ class CaptureService : LifecycleService() {
         if (preset == currentQuality) return false
         currentQuality = preset
 
-        if (screenCapture?.isCapturing == true) {
+        if (webRtcServer?.isRunning == true || screenCapture?.isCapturing == true) {
             stopCapture()
             val ip = getLocalIpAddress()
-            updateNotification("Quality → ${preset.label} — tap to re-enable capture")
+            updateNotification("Quality -> ${preset.label} — tap to re-enable capture")
             return true
         }
 
@@ -237,7 +247,7 @@ class CaptureService : LifecycleService() {
         return parts.joinToString("\n")
     }
 
-    fun isCapturing(): Boolean = screenCapture?.isCapturing ?: false
+    fun isCapturing(): Boolean = webRtcServer?.isRunning ?: (screenCapture?.isCapturing ?: false)
     fun isServerRunning(): Boolean = webServer != null
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
@@ -246,7 +256,15 @@ class CaptureService : LifecycleService() {
     fun getAccessCode(): String = accessCodes.firstOrNull()?.code ?: "----"
     fun getCodes(): List<CodeInfo> = accessCodes
     fun getViewerCount(): Int = webServer?.getViewerCount() ?: 0
-    fun getCameraLabel(): String = screenCapture?.getCameraLabel() ?: "back"
+    fun getWebRtcPeerCount(): Int = webRtcServer?.getPeerCount() ?: 0
+    fun isWebRtcActive(): Boolean = webRtcServer?.isRunning ?: false
+    fun isAudioEnabled(): Boolean = webRtcServer?.isAudioEnabled() ?: false
+    fun getCameraLabel(): String {
+        webRtcServer?.let { return if (it.isFrontCamera()) "front" else "back" }
+        return screenCapture?.getCameraLabel() ?: "back"
+    }
+    fun getEglBase(): EglBase? = webRtcServer?.getEglBase()
+    fun getWebRtcServer(): WebRtcServer? = webRtcServer
 
     // Chat bridge
     fun getConversations(): List<ConversationSummary> {
@@ -290,11 +308,26 @@ class CaptureService : LifecycleService() {
         screenCapture?.setPreviewSurface(surface)
     }
 
+    fun setPreviewRenderer(renderer: SurfaceViewRenderer?) {
+        webRtcServer?.setLocalRenderer(renderer)
+    }
+
+    fun removeRendererSink(renderer: SurfaceViewRenderer) {
+        webRtcServer?.removeRendererSink(renderer)
+    }
+
     fun switchCamera(): Boolean {
+        webRtcServer?.let {
+            if (!it.isRunning) return false
+            it.switchCamera()
+            return true
+        }
         if (screenCapture?.isCapturing != true) return false
         screenCapture?.switchCamera(serviceScope)
         return true
     }
+
+    fun toggleAudio(): Boolean = webRtcServer?.toggleAudio() ?: false
 
     // ─── Internet Tunnel ──────────────────────────────────────────────────────
 
@@ -306,7 +339,7 @@ class CaptureService : LifecycleService() {
             if (url.isNotEmpty()) {
                 Log.i(TAG, "Public URL: $url")
             }
-            if (screenCapture?.isCapturing == true) {
+            if (isCapturing()) {
                 updateNotification(buildLiveNotificationText())
             }
         }
@@ -368,7 +401,7 @@ class CaptureService : LifecycleService() {
                             tailscaleHostname = "http://$tsIp:$PORT"
                             Log.i(TAG, "Tailscale detected: $tailscaleHostname")
                             // Update notification with Tailscale URL
-                            if (screenCapture?.isCapturing == true) {
+                            if (isCapturing()) {
                                 updateNotification(buildLiveNotificationText())
                             }
                             return

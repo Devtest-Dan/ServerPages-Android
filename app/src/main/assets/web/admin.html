@@ -78,6 +78,7 @@
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
       <span class="viewer-count" id="viewers">0 viewers</span>
+      <span class="viewer-count" id="webrtcPeers" style="display:none; color:#66bb6a;">0 P2P</span>
       <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600;"></span>
       <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
       <button id="cameraBtn" onclick="switchCamera()" style="margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
@@ -193,6 +194,15 @@
         if (typeof data.viewers === 'number') {
           viewersEl.textContent = data.viewers === 1 ? '1 viewer' : `${data.viewers} viewers`;
           viewersEl.style.color = data.viewers > 0 ? '#66bb6a' : '';
+        }
+        // WebRTC peer count
+        const webrtcEl = document.getElementById('webrtcPeers');
+        if (typeof data.webrtcPeers === 'number' && data.webrtc) {
+          webrtcEl.textContent = data.webrtcPeers + ' P2P';
+          webrtcEl.style.display = '';
+          webrtcEl.style.color = data.webrtcPeers > 0 ? '#66bb6a' : '#888';
+        } else {
+          webrtcEl.style.display = 'none';
         }
         const pubEl = document.getElementById('publicUrlInfo');
         if (data.publicUrl) {

@@ -61,6 +61,24 @@
       cursor: wait;
     }
 
+    /* Connection mode indicator */
+    .conn-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .conn-badge.p2p {
+      background: #1b5e20;
+      color: #66bb6a;
+    }
+    .conn-badge.hls {
+      background: #4a3800;
+      color: #ffa726;
+    }
+
     /* ─── Chat ───────────────────────────────── */
     .chat-toggle-btn {
       margin-top: 16px;
@@ -168,6 +186,7 @@
     <div class="live-header">
       <span class="live-badge" id="liveBadge" style="display:none">LIVE</span>
       <h2>Screen Stream</h2>
+      <span class="conn-badge" id="connBadge" style="display:none"></span>
     </div>
 
     <div class="player-wrapper">
@@ -183,7 +202,7 @@
       <span id="status">Connecting...</span>
       <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600; font-size: 12px;"></span>
       <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
-      <div class="quality-toggle">
+      <div class="quality-toggle" id="qualityToggle">
         <button class="quality-btn" data-quality="720p" onclick="setQuality('720p')">720p</button>
         <button class="quality-btn" data-quality="1080p" onclick="setQuality('1080p')">1080p</button>
       </div>
@@ -204,7 +223,9 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <!-- WebRTC client (always loaded, lightweight) -->
+  <script src="/webrtc.js"></script>
+
   <script>
     const video = document.getElementById('player');
     const overlay = document.getElementById('overlay');
@@ -212,13 +233,125 @@
     const liveBadge = document.getElementById('liveBadge');
     const statusText = document.getElementById('status');
     const resText = document.getElementById('resolution');
+    const connBadge = document.getElementById('connBadge');
+    const qualityToggle = document.getElementById('qualityToggle');
     let hls = null;
     let retryTimeout = null;
     let startTimeout = null;
+    let streamMode = null; // 'webrtc' | 'hls' | null
 
-    function startStream() {
+    function setConnBadge(mode) {
+      streamMode = mode;
+      if (mode === 'webrtc') {
+        connBadge.textContent = 'P2P';
+        connBadge.className = 'conn-badge p2p';
+        connBadge.style.display = '';
+        // Hide quality toggle in WebRTC mode (resolution is server-controlled)
+        qualityToggle.style.display = 'none';
+      } else if (mode === 'hls') {
+        connBadge.textContent = 'HLS';
+        connBadge.className = 'conn-badge hls';
+        connBadge.style.display = '';
+        qualityToggle.style.display = '';
+      } else {
+        connBadge.style.display = 'none';
+        qualityToggle.style.display = '';
+      }
+    }
+
+    // ─── WebRTC-first, HLS fallback ─────────────────────
+
+    async function startStream() {
+      cleanup();
+      clearTimeout(retryTimeout);
+
+      overlay.classList.remove('hidden');
+      overlay.textContent = 'Connecting (P2P)...';
+      statusText.textContent = 'Connecting...';
+
+      try {
+        await startWebRTC();
+      } catch (e) {
+        console.warn('WebRTC failed, falling back to HLS:', e.message);
+        startHLS();
+      }
+    }
+
+    async function startWebRTC() {
+      const rtc = new AirDeckWebRTC(video, {
+        onConnected: () => {
+          overlay.classList.add('hidden');
+          statusDot.classList.add('live');
+          liveBadge.style.display = '';
+          statusText.textContent = 'Streaming (P2P)';
+          setConnBadge('webrtc');
+          // Update resolution once video has metadata
+          video.onloadedmetadata = () => {
+            if (video.videoWidth) {
+              resText.textContent = video.videoWidth + 'x' + video.videoHeight;
+            }
+          };
+        },
+        onDisconnected: () => {
+          console.warn('WebRTC disconnected');
+          if (!streamerStopped) {
+            // Try to reconnect
+            streamOffline();
+          }
+        },
+        onError: (msg) => {
+          console.warn('WebRTC error:', msg);
+        }
+      });
+
+      window._airdeckWebRTC = rtc;
+      await rtc.start();
+
+      // If we get here, offer/answer succeeded. Wait for actual video.
+      // Give it 8 seconds to produce video frames, otherwise fall back.
+      await new Promise((resolve, reject) => {
+        let resolved = false;
+        const check = () => {
+          if (resolved) return;
+          if (video.srcObject && video.readyState >= 2) {
+            resolved = true;
+            resolve();
+          }
+        };
+        video.addEventListener('loadeddata', check);
+        // Also poll in case event already fired
+        const interval = setInterval(check, 500);
+        setTimeout(() => {
+          clearInterval(interval);
+          if (!resolved) {
+            resolved = true;
+            reject(new Error('WebRTC video timeout'));
+          }
+        }, 8000);
+      });
+    }
+
+    function startHLS() {
+      setConnBadge('hls');
+      overlay.textContent = 'Connecting (HLS)...';
+
+      // Lazy-load hls.js
+      if (typeof Hls === 'undefined') {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1';
+        script.onload = () => initHLS();
+        script.onerror = () => {
+          overlay.textContent = 'Failed to load HLS player';
+          statusText.textContent = 'Error';
+        };
+        document.head.appendChild(script);
+      } else {
+        initHLS();
+      }
+    }
+
+    function initHLS() {
       if (hls) { hls.destroy(); hls = null; }
-      clearTimeout(startTimeout);
 
       if (Hls.isSupported()) {
         hls = new Hls({
@@ -248,7 +381,7 @@
           overlay.classList.add('hidden');
           statusDot.classList.add('live');
           liveBadge.style.display = '';
-          statusText.textContent = 'Streaming';
+          statusText.textContent = 'Streaming (HLS)';
           video.play().catch(() => {});
         });
 
@@ -263,7 +396,7 @@
 
         hls.on(Hls.Events.LEVEL_LOADED, () => {
           if (video.videoWidth) {
-            resText.textContent = `${video.videoWidth}x${video.videoHeight}`;
+            resText.textContent = video.videoWidth + 'x' + video.videoHeight;
           }
         });
 
@@ -273,11 +406,25 @@
           overlay.classList.add('hidden');
           statusDot.classList.add('live');
           liveBadge.style.display = '';
-          statusText.textContent = 'Streaming';
+          statusText.textContent = 'Streaming (HLS)';
           video.play().catch(() => {});
         });
         video.addEventListener('error', streamOffline);
       }
+    }
+
+    function cleanup() {
+      if (window._airdeckWebRTC) {
+        window._airdeckWebRTC.stop();
+        window._airdeckWebRTC = null;
+      }
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+      clearTimeout(startTimeout);
+      video.srcObject = null;
+      video.removeAttribute('src');
     }
 
     let streamerStopped = false;
@@ -286,6 +433,7 @@
       overlay.classList.remove('hidden');
       statusDot.classList.remove('live');
       liveBadge.style.display = 'none';
+      setConnBadge(null);
       if (streamerStopped) {
         overlay.textContent = 'Stream stopped by streamer';
         statusText.textContent = 'Stopped';
@@ -300,7 +448,7 @@
 
     async function updateStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await fetch('/api/status', { credentials: 'include' });
         const data = await res.json();
         if (data.uptime) {
           const mins = Math.floor(data.uptime / 60);
@@ -319,12 +467,12 @@
         }
         if (data.capturing === false) {
           streamerStopped = true;
-          if (hls) { hls.destroy(); hls = null; }
+          cleanup();
           streamOffline();
         } else if (data.capturing === true && streamerStopped) {
           streamerStopped = false;
         }
-        if (data.streamReady && !hls && !video.src) {
+        if (data.capturing && !streamMode && !window._airdeckWebRTC && !hls) {
           startStream();
         }
       } catch (e) {}
@@ -344,6 +492,7 @@
         const res = await fetch('/api/quality', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ quality })
         });
         const data = await res.json();
@@ -351,8 +500,9 @@
 
         if (data.changed) {
           overlay.classList.remove('hidden');
-          overlay.textContent = `Switching to ${quality}...`;
+          overlay.textContent = 'Switching to ' + quality + '...';
           statusText.textContent = 'Switching quality...';
+          cleanup();
           setTimeout(startStream, 4000);
         }
       } catch (e) {}
@@ -364,7 +514,7 @@
       const btn = document.getElementById('cameraBtn');
       btn.disabled = true;
       try {
-        const res = await fetch('/api/camera', { method: 'POST' });
+        const res = await fetch('/api/camera', { method: 'POST', credentials: 'include' });
         const data = await res.json();
         btn.textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
       } catch (e) {}
@@ -394,13 +544,12 @@
 
     async function loadChat() {
       try {
-        const res = await fetch('/api/chat/messages?since=' + lastChatTime);
+        const res = await fetch('/api/chat/messages?since=' + lastChatTime, { credentials: 'include' });
         if (!res.ok) return;
         const data = await res.json();
         const container = document.getElementById('chatMessages');
 
         if (data.messages && data.messages.length > 0) {
-          // Remove empty state
           const empty = container.querySelector('.chat-empty');
           if (empty) empty.remove();
 
@@ -429,9 +578,9 @@
         await fetch('/api/chat/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ text })
         });
-        // Immediately refresh
         await loadChat();
       } catch (e) {}
     }

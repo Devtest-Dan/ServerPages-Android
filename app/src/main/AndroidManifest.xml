@@ -10,6 +10,8 @@
     <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Keep alive -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -18,8 +20,9 @@
     <!-- Notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Camera -->
+    <!-- Camera + Microphone -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Media access -->
     <uses-permission
@@ -65,7 +68,7 @@
             android:name=".service.CaptureService"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="camera|microphone|mediaProjection" />
 
         <receiver
             android:name=".service.BootReceiver"

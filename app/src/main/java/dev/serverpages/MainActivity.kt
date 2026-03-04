@@ -191,9 +191,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
             SetupStep.CAPTURE -> {
-                // Request camera permission then start capture
+                // Request camera + audio permissions then start capture
+                val permsNeeded = mutableListOf<String>()
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                    permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                    permsNeeded.add(Manifest.permission.CAMERA)
+                }
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    permsNeeded.add(Manifest.permission.RECORD_AUDIO)
+                }
+                if (permsNeeded.isNotEmpty()) {
+                    permissionLauncher.launch(permsNeeded.toTypedArray())
                 } else {
                     // Request storage access silently before capture if needed
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {

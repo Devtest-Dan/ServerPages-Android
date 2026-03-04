@@ -2,6 +2,7 @@ package dev.serverpages.capture
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -48,6 +49,8 @@ class ScreenCapture(
     private var cameraHandler: Handler? = null
     private var useCamera: Boolean = false
     private var cameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+
+    private var previewSurface: Surface? = null
 
     @Volatile
     var isCapturing: Boolean = false
@@ -130,8 +133,15 @@ class ScreenCapture(
         return manager.cameraIdList.firstOrNull()
     }
 
+    @Volatile
+    private var switchRetryCount = 0
+    private var previousFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+    @Volatile
+    private var isReverting = false
+
     /**
      * Switch between front and back camera without stopping the encoder.
+     * Handles Samsung adaptivebrightnessgo conflict with retry logic.
      */
     fun switchCamera(scope: CoroutineScope) {
         if (!isCapturing || !useCamera) return
@@ -142,64 +152,144 @@ class ScreenCapture(
             CameraCharacteristics.LENS_FACING_BACK
         }
 
+        previousFacing = cameraFacing
+        switchRetryCount = 0
+        isReverting = false
+
         // Close current camera
+        closeCameraOnly()
+
+        cameraFacing = newFacing
+
+        openCameraForSwitch()
+    }
+
+    private fun closeCameraOnly() {
         try { cameraSession?.close() } catch (_: Exception) {}
         cameraSession = null
         try { cameraDevice?.close() } catch (_: Exception) {}
         cameraDevice = null
+    }
 
-        cameraFacing = newFacing
+    private fun openCameraForSwitch() {
+        val handler = cameraHandler
+        if (handler == null) {
+            Log.e(TAG, "Camera handler is null, cannot switch")
+            if (!isReverting) revertCamera()
+            return
+        }
 
-        // Open new camera on the same encoder surface
         val camManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val cameraId = findCamera(camManager, cameraFacing)
         if (cameraId == null) {
             Log.e(TAG, "No camera found for facing $cameraFacing")
+            if (!isReverting) revertCamera()
             return
         }
+
+        Log.i(TAG, "Opening camera $cameraId (facing=${getCameraLabel()}, attempt=${switchRetryCount + 1}, revert=$isReverting)")
 
         try {
             camManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    Log.i(TAG, "Camera opened successfully: ${getCameraLabel()}")
                     cameraDevice = camera
+                    switchRetryCount = 0
+                    isReverting = false
                     createCameraSession(camera, quality)
                     Log.i(TAG, "Switched to ${getCameraLabel()}")
                 }
                 override fun onDisconnected(camera: CameraDevice) {
+                    Log.w(TAG, "Camera disconnected (likely Samsung adaptive brightness)")
                     camera.close()
                     cameraDevice = null
+                    cameraSession = null
+                    // Retry — our foreground service has higher priority
+                    if (switchRetryCount < 3) {
+                        switchRetryCount++
+                        Log.i(TAG, "Retrying camera open (attempt ${switchRetryCount + 1})...")
+                        handler.postDelayed({ openCameraForSwitch() }, 500)
+                    } else if (!isReverting) {
+                        Log.e(TAG, "Failed to acquire camera after retries, reverting")
+                        revertCamera()
+                    } else {
+                        Log.e(TAG, "Revert also failed — camera unavailable")
+                    }
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
-                    Log.e(TAG, "Camera error on switch: $error")
+                    Log.e(TAG, "Camera error on switch: $error (revert=$isReverting)")
                     camera.close()
                     cameraDevice = null
+                    cameraSession = null
+                    if (switchRetryCount < 3 && error == ERROR_CAMERA_IN_USE) {
+                        switchRetryCount++
+                        Log.i(TAG, "Camera in use, retrying (attempt ${switchRetryCount + 1})...")
+                        handler.postDelayed({ openCameraForSwitch() }, 500)
+                    } else if (!isReverting) {
+                        revertCamera()
+                    } else {
+                        Log.e(TAG, "Revert also failed — camera unavailable")
+                    }
                 }
-            }, cameraHandler)
+            }, handler)
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Camera access exception: ${e.reason} — ${e.message}")
+            if (!isReverting) revertCamera()
+            else Log.e(TAG, "Revert also failed — camera unavailable")
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission denied on switch", e)
+            if (!isReverting) revertCamera()
+            else Log.e(TAG, "Revert also failed — camera unavailable")
         }
+    }
+
+    private fun revertCamera() {
+        isReverting = true
+        switchRetryCount = 0
+        Log.w(TAG, "Reverting to previous camera (${if (previousFacing == CameraCharacteristics.LENS_FACING_FRONT) "front" else "back"})")
+        cameraFacing = previousFacing
+        openCameraForSwitch()
     }
 
     fun getCameraLabel(): String {
         return if (cameraFacing == CameraCharacteristics.LENS_FACING_FRONT) "front" else "back"
     }
 
+    /**
+     * Set a preview surface for on-device display.
+     * If capturing, recreates the camera session to include it.
+     */
+    fun setPreviewSurface(surface: Surface?) {
+        previewSurface = surface
+        // Recreate session if camera is active
+        val cam = cameraDevice
+        if (cam != null && isCapturing && useCamera) {
+            try { cameraSession?.close() } catch (_: Exception) {}
+            cameraSession = null
+            createCameraSession(cam, quality)
+        }
+    }
+
     private fun createCameraSession(camera: CameraDevice, preset: QualityPreset) {
-        val surface = inputSurface ?: return
+        val encoderSurface = inputSurface ?: return
+
+        val surfaces = mutableListOf(encoderSurface)
+        previewSurface?.let { surfaces.add(it) }
 
         try {
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
-                listOf(surface),
+                surfaces,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         cameraSession = session
                         val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                            addTarget(surface)
+                            addTarget(encoderSurface)
+                            previewSurface?.let { addTarget(it) }
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                         }
                         session.setRepeatingRequest(request.build(), null, cameraHandler)
-                        Log.i(TAG, "Camera capture session started")
+                        Log.i(TAG, "Camera session started (preview=${previewSurface != null})")
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
