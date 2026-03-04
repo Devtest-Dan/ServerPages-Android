@@ -7,6 +7,7 @@ import org.webrtc.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Manages WebRTC peer connections for P2P live streaming.
@@ -20,7 +21,7 @@ class WebRtcServer(private val context: Context) {
         private const val VIDEO_TRACK_ID = "airdeck-video"
         private const val AUDIO_TRACK_ID = "airdeck-audio"
         private const val LOCAL_STREAM_ID = "airdeck-stream"
-        private const val ICE_GATHER_TIMEOUT_SEC = 10L
+        private const val ICE_GATHER_TIMEOUT_SEC = 3L
 
         val ICE_SERVERS = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
@@ -143,6 +144,7 @@ class WebRtcServer(private val context: Context) {
         }
 
         val iceGatherLatch = CountDownLatch(1)
+        val wasConnected = AtomicBoolean(false)
 
         val observer = object : PeerConnection.Observer {
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
@@ -151,14 +153,23 @@ class WebRtcServer(private val context: Context) {
                     iceGatherLatch.countDown()
                 }
             }
-            override fun onIceCandidate(candidate: IceCandidate?) {}
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                if (candidate != null) {
+                    Log.d(TAG, "[$viewerId] ICE candidate: ${candidate.sdp}")
+                }
+            }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.d(TAG, "[$viewerId] ICE connection: $state")
+                if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    wasConnected.set(true)
+                }
                 if (state == PeerConnection.IceConnectionState.DISCONNECTED ||
                     state == PeerConnection.IceConnectionState.FAILED) {
-                    // Clean up on disconnect
-                    removePeer(viewerId)
+                    // Only clean up if we were previously connected (not during initial setup)
+                    if (wasConnected.get()) {
+                        removePeer(viewerId)
+                    }
                 }
             }
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
@@ -178,13 +189,9 @@ class WebRtcServer(private val context: Context) {
             return null
         }
 
-        // Add local tracks
-        localVideoTrack?.let { pc.addTrack(it, listOf(LOCAL_STREAM_ID)) }
-        localAudioTrack?.let { pc.addTrack(it, listOf(LOCAL_STREAM_ID)) }
-
         peers[viewerId] = pc
 
-        // Set remote offer
+        // Set remote offer FIRST — creates transceivers from the browser's offer
         val offer = SessionDescription(SessionDescription.Type.OFFER, sdpOffer)
         val setRemoteLatch = CountDownLatch(1)
         var setRemoteSuccess = false
@@ -192,6 +199,7 @@ class WebRtcServer(private val context: Context) {
         pc.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
                 setRemoteSuccess = true
+                Log.d(TAG, "[$viewerId] setRemoteDescription success")
                 setRemoteLatch.countDown()
             }
             override fun onSetFailure(error: String?) {
@@ -206,6 +214,11 @@ class WebRtcServer(private val context: Context) {
             removePeer(viewerId)
             return null
         }
+
+        // Add local tracks — reuses transceivers created by the offer
+        localVideoTrack?.let { pc.addTrack(it, listOf(LOCAL_STREAM_ID)) }
+        localAudioTrack?.let { pc.addTrack(it, listOf(LOCAL_STREAM_ID)) }
+        Log.d(TAG, "[$viewerId] Tracks added, transceivers=${pc.transceivers.size}")
 
         // Create answer
         val answerLatch = CountDownLatch(1)

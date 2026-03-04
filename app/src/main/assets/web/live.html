@@ -190,7 +190,8 @@
     </div>
 
     <div class="player-wrapper">
-      <video id="player" autoplay playsinline controls></video>
+      <video id="player" autoplay playsinline muted style="position:absolute;width:1px;height:1px;opacity:0;"></video>
+      <canvas id="videoCanvas" style="width:100%;max-height:70vh;display:block;background:#000;border-radius:8px;object-fit:contain;"></canvas>
       <div class="player-overlay" id="overlay">
         Waiting for stream...
       </div>
@@ -278,56 +279,48 @@
     }
 
     async function startWebRTC() {
-      const rtc = new AirDeckWebRTC(video, {
-        onConnected: () => {
-          overlay.classList.add('hidden');
-          statusDot.classList.add('live');
-          liveBadge.style.display = '';
-          statusText.textContent = 'Streaming (P2P)';
-          setConnBadge('webrtc');
-          // Update resolution once video has metadata
-          video.onloadedmetadata = () => {
-            if (video.videoWidth) {
-              resText.textContent = video.videoWidth + 'x' + video.videoHeight;
-            }
-          };
-        },
-        onDisconnected: () => {
-          console.warn('WebRTC disconnected');
-          if (!streamerStopped) {
-            // Try to reconnect
-            streamOffline();
-          }
-        },
-        onError: (msg) => {
-          console.warn('WebRTC error:', msg);
-        }
-      });
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (fn) => { if (!settled) { settled = true; fn(); } };
 
-      window._airdeckWebRTC = rtc;
-      await rtc.start();
+        const rtc = new AirDeckWebRTC(video, {
+          onConnected: () => {
+            console.log('[AirDeck] P2P connected');
+            overlay.classList.add('hidden');
+            statusDot.classList.add('live');
+            liveBadge.style.display = '';
+            statusText.textContent = 'Streaming (P2P)';
+            setConnBadge('webrtc');
+            startCanvasRenderer();
+            video.onloadedmetadata = () => {
+              if (video.videoWidth) {
+                resText.textContent = video.videoWidth + 'x' + video.videoHeight;
+              }
+            };
+            settle(() => resolve());
+          },
+          onDisconnected: () => {
+            console.warn('[AirDeck] P2P disconnected');
+            settle(() => reject(new Error('WebRTC disconnected')));
+            if (!streamerStopped) streamOffline();
+          },
+          onError: (msg) => {
+            console.warn('[AirDeck] P2P error:', msg);
+            settle(() => reject(new Error(msg)));
+          }
+        });
 
-      // If we get here, offer/answer succeeded. Wait for actual video.
-      // Give it 8 seconds to produce video frames, otherwise fall back.
-      await new Promise((resolve, reject) => {
-        let resolved = false;
-        const check = () => {
-          if (resolved) return;
-          if (video.srcObject && video.readyState >= 2) {
-            resolved = true;
-            resolve();
-          }
-        };
-        video.addEventListener('loadeddata', check);
-        // Also poll in case event already fired
-        const interval = setInterval(check, 500);
-        setTimeout(() => {
-          clearInterval(interval);
-          if (!resolved) {
-            resolved = true;
-            reject(new Error('WebRTC video timeout'));
-          }
-        }, 8000);
+        window._airdeckWebRTC = rtc;
+
+        rtc.start().then(() => {
+          console.log('[AirDeck] Signaling done, waiting for P2P connection...');
+          // If no connection state change after 10s, fall back
+          setTimeout(() => {
+            settle(() => reject(new Error('WebRTC connection timeout')));
+          }, 10000);
+        }).catch((err) => {
+          settle(() => reject(err));
+        });
       });
     }
 
@@ -414,6 +407,7 @@
     }
 
     function cleanup() {
+      stopCanvasRenderer();
       if (window._airdeckWebRTC) {
         window._airdeckWebRTC.stop();
         window._airdeckWebRTC = null;
@@ -589,6 +583,34 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    // Canvas renderer — draws video frames since <video> doesn't paint WebRTC streams in some browsers
+    const videoCanvas = document.getElementById('videoCanvas');
+    const canvasCtx = videoCanvas.getContext('2d');
+    let canvasRunning = false;
+
+    function drawVideoFrame() {
+      if (!canvasRunning) return;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        if (videoCanvas.width !== video.videoWidth || videoCanvas.height !== video.videoHeight) {
+          videoCanvas.width = video.videoWidth;
+          videoCanvas.height = video.videoHeight;
+        }
+        canvasCtx.drawImage(video, 0, 0);
+      }
+      requestAnimationFrame(drawVideoFrame);
+    }
+
+    function startCanvasRenderer() {
+      if (!canvasRunning) {
+        canvasRunning = true;
+        drawVideoFrame();
+      }
+    }
+
+    function stopCanvasRenderer() {
+      canvasRunning = false;
     }
 
     startStream();

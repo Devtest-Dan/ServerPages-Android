@@ -38,24 +38,31 @@ class AirDeckWebRTC {
       this.pc.addTransceiver('video', { direction: 'recvonly' });
       this.pc.addTransceiver('audio', { direction: 'recvonly' });
 
-      // 7. Handle incoming tracks
+      // 7. Handle incoming tracks — use event.streams[0] from SDP msid
       this.pc.ontrack = (event) => {
+        // Use the stream from the SDP a=msid line
         if (event.streams && event.streams[0]) {
-          this.video.srcObject = event.streams[0];
-        } else {
-          // Fallback: create stream from tracks
-          let stream = this.video.srcObject;
-          if (!stream) {
-            stream = new MediaStream();
-            this.video.srcObject = stream;
+          if (this.video.srcObject !== event.streams[0]) {
+            this.video.srcObject = event.streams[0];
           }
-          stream.addTrack(event.track);
+        } else {
+          if (!this._stream) {
+            this._stream = new MediaStream();
+            this.video.srcObject = this._stream;
+          }
+          this._stream.addTrack(event.track);
         }
+
+        event.track.onunmute = () => {
+          this.video.play().catch(() => {});
+        };
+        this.video.play().catch(() => {});
       };
 
       // Connection state monitoring
       this.pc.onconnectionstatechange = () => {
-        const state = this.pc.connectionState;
+        const state = this.pc ? this.pc.connectionState : 'null';
+        console.log('[AirDeck] connectionState:', state);
         if (state === 'connected') {
           this.onConnected();
         } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
@@ -64,7 +71,7 @@ class AirDeckWebRTC {
       };
 
       this.pc.oniceconnectionstatechange = () => {
-        const state = this.pc.iceConnectionState;
+        const state = this.pc ? this.pc.iceConnectionState : 'null';
         if (state === 'failed') {
           this.onError('ICE connection failed');
         }
@@ -138,8 +145,11 @@ class AirDeckWebRTC {
     }
     // Notify server
     if (this.viewerId) {
-      navigator.sendBeacon('/api/webrtc/hangup',
-        JSON.stringify({ viewerId: this.viewerId }));
+      try {
+        navigator.sendBeacon('/api/webrtc/hangup',
+          new Blob([JSON.stringify({ viewerId: this.viewerId })],
+            { type: 'application/json' }));
+      } catch (e) {}
       this.viewerId = null;
     }
     if (this.video) {
