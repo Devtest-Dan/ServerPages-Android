@@ -337,8 +337,11 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
                                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                                         CaptureService.instance?.setPreviewSurface(Surface(st))
+                                        applyCenterCrop(this@apply, w, h)
                                     }
-                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                                        applyCenterCrop(this@apply, w, h)
+                                    }
                                     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                                         CaptureService.instance?.setPreviewSurface(null)
                                         return true
@@ -768,6 +771,37 @@ private fun ChatDetailScreen(
             }
         }
     }
+}
+
+/**
+ * Center-crop transform for TextureView — mimics camera app preview.
+ * Camera outputs landscape (e.g. 1280x720); view is portrait (9:16).
+ * Scales up to fill the view without distortion, cropping the excess.
+ */
+private fun applyCenterCrop(textureView: TextureView, viewW: Int, viewH: Int) {
+    // Camera outputs landscape — assume 16:9 sensor
+    val camW = 1280f
+    val camH = 720f
+
+    val viewAspect = viewW.toFloat() / viewH
+    val camAspect = camW / camH
+
+    val matrix = android.graphics.Matrix()
+    val scaleX: Float
+    val scaleY: Float
+
+    if (viewAspect < camAspect) {
+        // View is taller — scale to match height, crop sides
+        scaleY = 1f
+        scaleX = (camAspect / viewAspect)
+    } else {
+        // View is wider — scale to match width, crop top/bottom
+        scaleX = 1f
+        scaleY = (viewAspect / camAspect)
+    }
+
+    matrix.setScale(scaleX, scaleY, viewW / 2f, viewH / 2f)
+    textureView.setTransform(matrix)
 }
 
 private fun formatTime(timestamp: Long): String {
