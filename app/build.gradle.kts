@@ -37,6 +37,12 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 dependencies {
@@ -60,4 +66,5 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.nanohttpd)
     implementation(libs.gson)
+    implementation(libs.jsch)
 }
