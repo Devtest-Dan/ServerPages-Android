@@ -70,6 +70,7 @@ class CaptureService : LifecycleService() {
     private var tailscaleHostname: String = ""
     private var publicUrl: String = ""
     private var accessCodes: List<CodeInfo> = emptyList()
+    private var heartbeatManager: dev.serverpages.hub.HeartbeatManager? = null
 
     private val hlsDir: File by lazy {
         File(cacheDir, "hls").apply { mkdirs() }
@@ -78,6 +79,12 @@ class CaptureService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        heartbeatManager = dev.serverpages.hub.HeartbeatManager(this).apply {
+            getPublicUrl = { this@CaptureService.publicUrl }
+            getSource = { this@CaptureService.getCurrentSource() }
+            getQuality = { this@CaptureService.currentQuality.label }
+            onWakeCommand = { stopTunnel(); startTunnel() }
+        }
         createNotificationChannel()
         accessCodes = generateUniqueCodes(10)
         Log.i(TAG, "Service created — ${accessCodes.size} access codes generated")
@@ -148,6 +155,7 @@ class CaptureService : LifecycleService() {
         mediaProjection = null
         stopWebServer()
         releaseWifiLock()
+        heartbeatManager?.stop()
         releaseWakeLock()
         serviceScope.cancel()
         instance = null
@@ -177,6 +185,7 @@ class CaptureService : LifecycleService() {
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
             startTunnel()
+            heartbeatManager?.start(serviceScope)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start HTTP server", e)
         }
@@ -373,6 +382,7 @@ class CaptureService : LifecycleService() {
         sshTunnel = SshTunnel(PORT)
         sshTunnel!!.start(serviceScope) { url ->
             publicUrl = url
+            heartbeatManager?.onUrlChanged(serviceScope, url)
             if (url.isNotEmpty()) {
                 Log.i(TAG, "Public URL: $url")
             }
