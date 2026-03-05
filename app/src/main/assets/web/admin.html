@@ -82,6 +82,7 @@
       <span class="viewer-count" id="webrtcPeers" style="display:none; color:#66bb6a;">0 P2P</span>
       <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600;"></span>
       <span id="tailscaleInfo" style="display:none; color: #66bb6a; font-weight: 600;"></span>
+      <button id="audioBtn" onclick="toggleAudio()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:16px; cursor:pointer;" title="Unmute audio">&#128263;</button>
       <button id="sourceBtn" onclick="switchSource()" style="display:none; margin-left:auto; padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Camera</button>
       <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
     </div>
@@ -301,6 +302,13 @@
         const btn = document.getElementById('copyBtn');
         if (btn) { btn.textContent = 'Copied!'; btn.style.background = '#66bb6a'; setTimeout(() => { btn.textContent = 'Copy'; btn.style.background = '#e040fb'; }, 1500); }
       });
+    }
+
+    // ─── Audio toggle ───────────────────────────
+    function toggleAudio() {
+      video.muted = !video.muted;
+      document.getElementById('audioBtn').innerHTML = video.muted ? '&#128263;' : '&#128266;';
+      document.getElementById('audioBtn').title = video.muted ? 'Unmute audio' : 'Mute audio';
     }
 
     startStream();

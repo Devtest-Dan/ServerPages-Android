@@ -165,6 +165,7 @@
       <span id="uptime">—</span>
       <span id="status">Connecting...</span>
       <span id="publicUrlInfo" style="display:none; color: #42a5f5; font-weight: 600; font-size: 12px;"></span>
+      <button id="audioBtn" onclick="toggleAudio()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:16px; cursor:pointer;" title="Unmute audio">&#128263;</button>
       <button id="cameraBtn" onclick="switchCamera()" style="padding:4px 14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;">&#128247; Back</button>
     </div>
 
@@ -437,6 +438,13 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    // ─── Audio toggle ───────────────────────────
+    function toggleAudio() {
+      video.muted = !video.muted;
+      document.getElementById('audioBtn').innerHTML = video.muted ? '&#128263;' : '&#128266;';
+      document.getElementById('audioBtn').title = video.muted ? 'Unmute audio' : 'Mute audio';
     }
 
     startStream();
