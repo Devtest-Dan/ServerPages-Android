@@ -416,7 +416,8 @@ class WebServer(
                 "webrtc" to webrtcActive,
                 "webrtcPeers" to webrtcPeers,
                 "source" to source,
-                "screenAvailable" to screenAvailable
+                "screenAvailable" to screenAvailable,
+                "cameraPaused" to (webrtcServer?.cameraPaused ?: false)
             )
         )
     }

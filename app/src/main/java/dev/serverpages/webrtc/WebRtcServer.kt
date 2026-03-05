@@ -2,12 +2,14 @@ package dev.serverpages.webrtc
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import org.webrtc.*
 import java.nio.ByteBuffer
@@ -73,6 +75,15 @@ class WebRtcServer(private val context: Context) {
     private var captureHeight = 720
     private var captureFps = 30
 
+    // Camera availability tracking
+    private var cameraManager: CameraManager? = null
+    private var availabilityCallback: CameraManager.AvailabilityCallback? = null
+    private var currentCameraId: String? = null
+
+    @Volatile
+    var cameraPaused = false
+        private set
+
     @Volatile
     var isRunning = false
         private set
@@ -118,6 +129,7 @@ class WebRtcServer(private val context: Context) {
         val cameraName = findCamera(cameraEnumerator, useFrontCamera)
             ?: run { Log.e(TAG, "No camera found"); return }
 
+        currentCameraId = cameraName
         capturer = Camera2Capturer(context, cameraName, null)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(width, height, fps)
@@ -134,7 +146,11 @@ class WebRtcServer(private val context: Context) {
         localAudioTrack = f.createAudioTrack(AUDIO_TRACK_ID, audioSource)
         localAudioTrack!!.setEnabled(audioEnabled)
 
+        // Register camera availability callback to detect when another app steals/releases camera
+        registerCameraAvailabilityCallback()
+
         isRunning = true
+        cameraPaused = false
         Log.i(TAG, "Camera started: ${width}x${height}@${fps}fps, front=$useFrontCamera")
     }
 
@@ -320,6 +336,10 @@ class WebRtcServer(private val context: Context) {
     fun switchToScreen(projection: MediaProjection) {
         val f = factory ?: run { Log.e(TAG, "Factory not initialized"); return }
 
+        // Unregister camera callback — we're intentionally releasing camera
+        unregisterCameraAvailabilityCallback()
+        cameraPaused = false
+
         // Stop camera capturer
         try { capturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping camera capturer", e) }
         capturer?.dispose()
@@ -493,6 +513,7 @@ class WebRtcServer(private val context: Context) {
         val cameraName = findCamera(cameraEnumerator, useFrontCamera)
             ?: run { Log.e(TAG, "No camera found for switch"); return }
 
+        currentCameraId = cameraName
         capturer = Camera2Capturer(context, cameraName, null)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(captureWidth, captureHeight, captureFps)
@@ -508,6 +529,8 @@ class WebRtcServer(private val context: Context) {
         oldSource?.dispose()
 
         currentSource = "camera"
+        cameraPaused = false
+        registerCameraAvailabilityCallback()
         Log.i(TAG, "Switched to camera: ${captureWidth}x${captureHeight}@${captureFps}fps, front=$useFrontCamera")
     }
 
@@ -545,6 +568,80 @@ class WebRtcServer(private val context: Context) {
         Log.d(TAG, "Replaced video track on ${peers.size} peers")
     }
 
+    private fun registerCameraAvailabilityCallback() {
+        unregisterCameraAvailabilityCallback()
+        val camId = currentCameraId ?: return
+        val mgr = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return
+        cameraManager = mgr
+
+        val callback = object : CameraManager.AvailabilityCallback() {
+            override fun onCameraUnavailable(cameraId: String) {
+                if (cameraId == camId && currentSource == "camera" && isRunning && !cameraPaused) {
+                    Log.w(TAG, "Camera $cameraId taken by another app")
+                    cameraPaused = true
+                }
+            }
+            override fun onCameraAvailable(cameraId: String) {
+                if (cameraId == camId && cameraPaused && isRunning) {
+                    Log.i(TAG, "Camera $cameraId available again — restarting")
+                    cameraPaused = false
+                    Handler(Looper.getMainLooper()).post { restartCamera() }
+                }
+            }
+        }
+        availabilityCallback = callback
+        mgr.registerAvailabilityCallback(callback, Handler(Looper.getMainLooper()))
+        Log.d(TAG, "Registered camera availability callback for $camId")
+    }
+
+    private fun unregisterCameraAvailabilityCallback() {
+        availabilityCallback?.let { cb ->
+            cameraManager?.unregisterAvailabilityCallback(cb)
+        }
+        availabilityCallback = null
+        cameraManager = null
+    }
+
+    private fun restartCamera() {
+        val f = factory ?: run { Log.e(TAG, "Factory not initialized for restart"); return }
+        if (!isRunning || currentSource != "camera") return
+
+        Log.i(TAG, "Restarting camera capturer...")
+
+        // Stop old capturer
+        try { capturer?.stopCapture() } catch (e: Exception) { Log.w(TAG, "Error stopping capturer for restart", e) }
+        capturer?.dispose()
+        capturer = null
+
+        val oldTrack = localVideoTrack
+        val oldSource = videoSource
+        val oldHelper = surfaceTextureHelper
+
+        // Create fresh chain
+        surfaceTextureHelper = SurfaceTextureHelper.create("WebRtcCaptureThread", eglBase!!.eglBaseContext)
+        videoSource = f.createVideoSource(false)
+
+        val cameraEnumerator = Camera2Enumerator(context)
+        val cameraName = findCamera(cameraEnumerator, useFrontCamera)
+            ?: run { Log.e(TAG, "No camera found for restart"); return }
+
+        currentCameraId = cameraName
+        capturer = Camera2Capturer(context, cameraName, null)
+        capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
+        capturer!!.startCapture(captureWidth, captureHeight, captureFps)
+
+        localVideoTrack = f.createVideoTrack(VIDEO_TRACK_ID, videoSource)
+        localVideoTrack!!.setEnabled(true)
+
+        replaceVideoTrackOnPeers(localVideoTrack!!)
+
+        oldTrack?.dispose()
+        oldSource?.dispose()
+        oldHelper?.dispose()
+
+        Log.i(TAG, "Camera restarted: ${captureWidth}x${captureHeight}@${captureFps}fps")
+    }
+
     fun switchCamera() {
         if (currentSource != "camera") {
             Log.w(TAG, "switchCamera() ignored — currently on $currentSource")
@@ -574,6 +671,9 @@ class WebRtcServer(private val context: Context) {
 
     fun stop() {
         isRunning = false
+        cameraPaused = false
+        unregisterCameraAvailabilityCallback()
+        currentCameraId = null
 
         // Close all peers
         peers.keys.toList().forEach { removePeer(it) }

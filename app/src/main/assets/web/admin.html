@@ -247,6 +247,12 @@
         } else {
           sourceBtn.style.display = 'none';
         }
+        if (data.cameraPaused) {
+          overlay.textContent = 'Camera in use by another app...';
+          overlay.classList.remove('hidden');
+        } else if (data.capturing && streaming) {
+          overlay.classList.add('hidden');
+        }
         if (data.capturing === false) {
           streamerStopped = true;
           cleanup();

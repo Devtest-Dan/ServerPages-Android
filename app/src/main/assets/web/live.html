@@ -320,6 +320,12 @@
             + ' <button id="copyBtn" onclick="copyUrl(\'' + data.publicUrl.replace(/'/g, "\\'") + '\')" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--accent);cursor:pointer;padding:4px 10px;font-size:12px;font-weight:600;vertical-align:middle;">Copy</button>';
           pubEl.style.display = '';
         }
+        if (data.cameraPaused) {
+          overlay.textContent = 'Camera in use by another app...';
+          overlay.classList.remove('hidden');
+        } else if (data.capturing && streaming) {
+          overlay.classList.add('hidden');
+        }
         if (data.capturing === false) {
           streamerStopped = true;
           cleanup();
