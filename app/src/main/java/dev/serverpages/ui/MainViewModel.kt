@@ -12,6 +12,7 @@ import dev.serverpages.service.CaptureService
 
 enum class SetupStep {
     NOTIFICATIONS,
+    BATTERY,
     CAPTURE,
     DONE
 }

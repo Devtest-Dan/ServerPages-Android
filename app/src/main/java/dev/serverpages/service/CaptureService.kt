@@ -71,6 +71,7 @@ class CaptureService : LifecycleService() {
     private var publicUrl: String = ""
     private var accessCodes: List<CodeInfo> = emptyList()
     private var heartbeatManager: dev.serverpages.hub.HeartbeatManager? = null
+    private var networkMonitor: NetworkMonitor? = null
 
     private val hlsDir: File by lazy {
         File(cacheDir, "hls").apply { mkdirs() }
@@ -149,6 +150,8 @@ class CaptureService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        networkMonitor?.unregister()
+        networkMonitor = null
         stopTunnel()
         stopCapture()  // Stops WebRTC + ScreenCapture
         try { mediaProjection?.stop() } catch (_: Exception) {}
@@ -186,6 +189,17 @@ class CaptureService : LifecycleService() {
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
             startTunnel()
             heartbeatManager?.start(serviceScope)
+            networkMonitor = NetworkMonitor(this).apply {
+                onNetworkAvailable = {
+                    serviceScope.launch {
+                        stopTunnel()
+                        delay(2000)
+                        startTunnel()
+                    }
+                }
+                onNetworkLost = { stopTunnel() }
+                register()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start HTTP server", e)
         }

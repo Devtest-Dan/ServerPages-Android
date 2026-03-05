@@ -1,6 +1,7 @@
 package dev.serverpages
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
@@ -8,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -159,6 +161,11 @@ class MainActivity : ComponentActivity() {
             return SetupStep.NOTIFICATIONS
         }
 
+        // Check battery optimization
+        if (!isIgnoringBatteryOptimizations()) {
+            return SetupStep.BATTERY
+        }
+
         // Need screen capture
         return SetupStep.CAPTURE
     }
@@ -169,6 +176,11 @@ class MainActivity : ComponentActivity() {
         } else {
             true // Not needed below Android 13
         }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
     }
 
     private fun hasStoragePermission(): Boolean {
@@ -189,6 +201,13 @@ class MainActivity : ComponentActivity() {
                 } else {
                     advanceSetupStep()
                 }
+            }
+            SetupStep.BATTERY -> {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+                advanceSetupStep()
             }
             SetupStep.CAPTURE -> {
                 // Request camera + audio permissions then start capture
@@ -227,7 +246,8 @@ class MainActivity : ComponentActivity() {
         if (!::viewModel.isInitialized) return
         val current = viewModel.state.value.setupStep
         val next = when (current) {
-            SetupStep.NOTIFICATIONS -> SetupStep.CAPTURE
+            SetupStep.NOTIFICATIONS -> SetupStep.BATTERY
+            SetupStep.BATTERY -> SetupStep.CAPTURE
             SetupStep.CAPTURE -> {
                 // Camera permission granted — request MediaProjection then start
                 requestMediaProjection()

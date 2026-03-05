@@ -22,6 +22,10 @@
 -keep class * extends dagger.hilt.internal.GeneratedComponent { *; }
 -dontwarn dagger.hilt.**
 
+# WorkManager
+-keep class androidx.work.** { *; }
+-keep class dev.serverpages.service.ServiceWatchdogWorker { *; }
+
 # Native methods
 -keepclasseswithmembernames class * {
     native <methods>;

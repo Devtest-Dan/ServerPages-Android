@@ -25,6 +25,7 @@ class HeartbeatManager(private val context: Context) {
         private const val TAG = "HeartbeatManager"
         private const val HUB_URL = "https://airdeck-hub.vercel.app"
         private const val HEARTBEAT_INTERVAL_MS = 30_000L
+        private const val MAX_BACKOFF_MS = 120_000L
         private const val WAKE_POLL_INTERVAL_MS = 30_000L
         private const val PREFS_NAME = "airdeck_hub"
         private const val KEY_DEVICE_ID = "device_id"
@@ -38,6 +39,7 @@ class HeartbeatManager(private val context: Context) {
     private val deviceId: String
     private var heartbeatJob: Job? = null
     private var wakeJob: Job? = null
+    private var currentInterval = HEARTBEAT_INTERVAL_MS
     private val startTime = SystemClock.elapsedRealtime()
 
     init {
@@ -51,10 +53,17 @@ class HeartbeatManager(private val context: Context) {
 
     fun start(scope: CoroutineScope) {
         register(scope)
+        currentInterval = HEARTBEAT_INTERVAL_MS
         heartbeatJob = scope.launch {
             while (true) {
-                delay(HEARTBEAT_INTERVAL_MS)
-                withContext(Dispatchers.IO) { sendHeartbeat() }
+                delay(currentInterval)
+                val success = withContext(Dispatchers.IO) { sendHeartbeat() }
+                if (success) {
+                    currentInterval = HEARTBEAT_INTERVAL_MS
+                } else {
+                    currentInterval = (currentInterval * 2).coerceAtMost(MAX_BACKOFF_MS)
+                    Log.w(TAG, "Heartbeat failed — backoff to ${currentInterval / 1000}s")
+                }
             }
         }
         wakeJob = scope.launch {
@@ -88,8 +97,8 @@ class HeartbeatManager(private val context: Context) {
         } }
     }
 
-    private fun sendHeartbeat() {
-        try {
+    private fun sendHeartbeat(): Boolean {
+        return try {
             val body = JSONObject().apply {
                 put("deviceId", deviceId)
                 put("publicUrl", getPublicUrl?.invoke() ?: "")
@@ -99,8 +108,10 @@ class HeartbeatManager(private val context: Context) {
                 put("quality", getQuality?.invoke() ?: "720p")
             }
             postJson("$HUB_URL/api/heartbeat", body)
+            true
         } catch (e: Exception) {
             Log.w(TAG, "Heartbeat failed: ${e.message}")
+            false
         }
     }
 
