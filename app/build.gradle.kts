@@ -14,8 +14,8 @@ android {
         applicationId = "dev.serverpages"
         minSdk = 29
         targetSdk = 33
-        versionCode = 1
-        versionName = "1.1.1"
+        versionCode = 2
+        versionName = "1.2.0"
     }
 
     signingConfigs {
