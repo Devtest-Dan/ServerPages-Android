@@ -79,6 +79,7 @@ class WebRtcServer(private val context: Context) {
     private var cameraManager: CameraManager? = null
     private var availabilityCallback: CameraManager.AvailabilityCallback? = null
     private var currentCameraId: String? = null
+    @Volatile private var cameraCallbackArmed = false
 
     @Volatile
     var cameraPaused = false
@@ -574,9 +575,13 @@ class WebRtcServer(private val context: Context) {
         val mgr = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return
         cameraManager = mgr
 
+        // Android fires onCameraUnavailable immediately on registration for cameras
+        // we already hold — arm the callback after a short delay to ignore that.
+        cameraCallbackArmed = false
+
         val callback = object : CameraManager.AvailabilityCallback() {
             override fun onCameraUnavailable(cameraId: String) {
-                if (cameraId == camId && currentSource == "camera" && isRunning && !cameraPaused) {
+                if (cameraId == camId && cameraCallbackArmed && currentSource == "camera" && isRunning && !cameraPaused) {
                     Log.w(TAG, "Camera $cameraId taken by another app")
                     cameraPaused = true
                 }
@@ -591,6 +596,9 @@ class WebRtcServer(private val context: Context) {
         }
         availabilityCallback = callback
         mgr.registerAvailabilityCallback(callback, Handler(Looper.getMainLooper()))
+
+        // Arm after 1s — by then the initial unavailable callback has already fired
+        Handler(Looper.getMainLooper()).postDelayed({ cameraCallbackArmed = true }, 1000)
         Log.d(TAG, "Registered camera availability callback for $camId")
     }
 
@@ -635,6 +643,9 @@ class WebRtcServer(private val context: Context) {
 
         replaceVideoTrackOnPeers(localVideoTrack!!)
 
+        // Re-register callback with arm delay so our own capture start is ignored
+        registerCameraAvailabilityCallback()
+
         oldTrack?.dispose()
         oldSource?.dispose()
         oldHelper?.dispose()
@@ -650,7 +661,11 @@ class WebRtcServer(private val context: Context) {
         capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
             override fun onCameraSwitchDone(isFront: Boolean) {
                 useFrontCamera = isFront
-                Log.i(TAG, "Camera switched to ${if (isFront) "front" else "back"}")
+                // Update tracked camera ID and re-register availability callback
+                val cameraEnumerator = Camera2Enumerator(context)
+                currentCameraId = findCamera(cameraEnumerator, isFront)
+                registerCameraAvailabilityCallback()
+                Log.i(TAG, "Camera switched to ${if (isFront) "front" else "back"}, tracking $currentCameraId")
             }
             override fun onCameraSwitchError(error: String?) {
                 Log.e(TAG, "Camera switch failed: $error")
