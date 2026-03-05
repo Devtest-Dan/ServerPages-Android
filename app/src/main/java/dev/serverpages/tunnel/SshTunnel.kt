@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Public tunnel — exposes local HTTP port to the internet.
  * Tries serveo.net (free, unlimited) then pinggy.io as fallback.
  */
-class SshTunnel(private val localPort: Int) {
+class SshTunnel(private val localPort: Int, private val subdomain: String = "airdeck") {
 
     companion object {
         private const val TAG = "SshTunnel"
@@ -196,14 +196,15 @@ class SshTunnel(private val localPort: Int) {
         readerThread.start()
 
         // Step 3: Request port forwarding — triggers the server to output the URL
+        // Use subdomain as bind address for Serveo fixed URL (ssh -R subdomain:80:localhost:port)
         try {
-            session.setPortForwardingR(0, "localhost", localPort)
-            Log.d(TAG, "Port forwarding active (port 0 → localhost:$localPort)")
+            session.setPortForwardingR(subdomain, 80, "localhost", localPort)
+            Log.d(TAG, "Port forwarding active ($subdomain:80 → localhost:$localPort)")
         } catch (e: Exception) {
-            Log.w(TAG, "Port 0 failed, trying port 80: ${e.message}")
+            Log.w(TAG, "Subdomain '$subdomain' failed, trying random: ${e.message}")
             try {
-                session.setPortForwardingR(80, "localhost", localPort)
-                Log.d(TAG, "Port forwarding active (port 80 → localhost:$localPort)")
+                session.setPortForwardingR(0, "localhost", localPort)
+                Log.d(TAG, "Port forwarding active (random port → localhost:$localPort)")
             } catch (e2: Exception) {
                 Log.e(TAG, "Port forwarding failed: ${e2.message}")
                 shellChannel.disconnect()

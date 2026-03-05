@@ -8,9 +8,11 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -52,13 +54,13 @@ class HeartbeatManager(private val context: Context) {
         heartbeatJob = scope.launch {
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
-                sendHeartbeat()
+                withContext(Dispatchers.IO) { sendHeartbeat() }
             }
         }
         wakeJob = scope.launch {
             while (true) {
                 delay(WAKE_POLL_INTERVAL_MS)
-                pollWakeFlag()
+                withContext(Dispatchers.IO) { pollWakeFlag() }
             }
         }
     }
@@ -71,11 +73,11 @@ class HeartbeatManager(private val context: Context) {
     }
 
     fun onUrlChanged(scope: CoroutineScope, url: String) {
-        scope.launch { sendHeartbeat() }
+        scope.launch { withContext(Dispatchers.IO) { sendHeartbeat() } }
     }
 
     private fun register(scope: CoroutineScope) {
-        scope.launch {
+        scope.launch { withContext(Dispatchers.IO) {
             val body = JSONObject().apply {
                 put("deviceId", deviceId)
                 put("deviceName", Build.MODEL)
@@ -83,7 +85,7 @@ class HeartbeatManager(private val context: Context) {
                 put("androidVersion", Build.VERSION.RELEASE)
             }
             postJson("$HUB_URL/api/register", body)
-        }
+        } }
     }
 
     private fun sendHeartbeat() {
