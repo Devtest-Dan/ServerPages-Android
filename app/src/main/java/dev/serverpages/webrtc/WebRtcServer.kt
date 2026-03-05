@@ -67,7 +67,79 @@ class WebRtcServer(private val context: Context) {
     private var screenRepeatTimer: java.util.Timer? = null
 
     private val peers = ConcurrentHashMap<String, PeerConnection>()
+    private var localRenderer: SurfaceViewRenderer? = null
     private var useFrontCamera = true
+
+    private var restartRetryTimer: java.util.Timer? = null
+
+    // Camera events handler — detects disconnect/error when camera is silently evicted.
+    // Sets cameraPaused and starts a polling retry since AvailabilityCallback may not fire on Samsung.
+    private val cameraEventsHandler = object : CameraVideoCapturer.CameraEventsHandler {
+        override fun onCameraError(errorDescription: String?) {
+            Log.e(TAG, "Camera error: $errorDescription")
+            if (isRunning && currentSource == "camera" && !cameraPaused) {
+                cameraPaused = true
+                startRestartRetry()
+            }
+        }
+        override fun onCameraDisconnected() {
+            Log.w(TAG, "Camera disconnected (evicted by another app)")
+            if (isRunning && currentSource == "camera" && !cameraPaused) {
+                cameraPaused = true
+                startRestartRetry()
+            }
+        }
+        override fun onCameraFreezed(errorDescription: String?) {
+            Log.w(TAG, "Camera frozen: $errorDescription")
+            if (isRunning && currentSource == "camera" && !cameraPaused) {
+                cameraPaused = true
+                startRestartRetry()
+            }
+        }
+        override fun onCameraOpening(cameraName: String?) {
+            Log.d(TAG, "Camera opening: $cameraName")
+        }
+        override fun onFirstFrameAvailable() {
+            Log.d(TAG, "First camera frame available")
+            if (cameraPaused) {
+                cameraPaused = false
+                stopRestartRetry()
+                Log.i(TAG, "Camera resumed — first frame received")
+            }
+        }
+        override fun onCameraClosed() {
+            Log.d(TAG, "Camera closed")
+        }
+    }
+
+    private fun startRestartRetry() {
+        stopRestartRetry()
+        restartRetryTimer = java.util.Timer("CameraRetry").also { timer ->
+            timer.scheduleAtFixedRate(object : java.util.TimerTask() {
+                override fun run() {
+                    if (!cameraPaused || !isRunning || currentSource != "camera") {
+                        stopRestartRetry()
+                        return
+                    }
+                    Handler(Looper.getMainLooper()).post {
+                        if (cameraPaused && isRunning && currentSource == "camera") {
+                            Log.i(TAG, "Retry: attempting camera restart...")
+                            try {
+                                restartCamera()
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Restart attempt failed, will retry", e)
+                            }
+                        }
+                    }
+                }
+            }, 3000L, 3000L) // Retry every 3 seconds
+        }
+    }
+
+    private fun stopRestartRetry() {
+        restartRetryTimer?.cancel()
+        restartRetryTimer = null
+    }
     private var audioEnabled = true
     var currentSource: String = "camera"
         private set
@@ -131,7 +203,7 @@ class WebRtcServer(private val context: Context) {
             ?: run { Log.e(TAG, "No camera found"); return }
 
         currentCameraId = cameraName
-        capturer = Camera2Capturer(context, cameraName, null)
+        capturer = Camera2Capturer(context, cameraName, cameraEventsHandler)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(width, height, fps)
 
@@ -156,12 +228,9 @@ class WebRtcServer(private val context: Context) {
     }
 
     fun setLocalRenderer(renderer: SurfaceViewRenderer?) {
+        localRenderer = renderer
         if (renderer != null) {
             localVideoTrack?.addSink(renderer)
-        } else {
-            localVideoTrack?.let { track ->
-                // Removing sinks is handled by the renderer's release
-            }
         }
     }
 
@@ -515,7 +584,7 @@ class WebRtcServer(private val context: Context) {
             ?: run { Log.e(TAG, "No camera found for switch"); return }
 
         currentCameraId = cameraName
-        capturer = Camera2Capturer(context, cameraName, null)
+        capturer = Camera2Capturer(context, cameraName, cameraEventsHandler)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(captureWidth, captureHeight, captureFps)
 
@@ -587,8 +656,9 @@ class WebRtcServer(private val context: Context) {
                 }
             }
             override fun onCameraAvailable(cameraId: String) {
-                if (cameraId == camId && cameraPaused && isRunning) {
+                if (cameraId == camId && cameraCallbackArmed && cameraPaused && isRunning) {
                     Log.i(TAG, "Camera $cameraId available again — restarting")
+                    stopRestartRetry()
                     cameraPaused = false
                     Handler(Looper.getMainLooper()).post { restartCamera() }
                 }
@@ -634,17 +704,17 @@ class WebRtcServer(private val context: Context) {
             ?: run { Log.e(TAG, "No camera found for restart"); return }
 
         currentCameraId = cameraName
-        capturer = Camera2Capturer(context, cameraName, null)
+        capturer = Camera2Capturer(context, cameraName, cameraEventsHandler)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(captureWidth, captureHeight, captureFps)
 
         localVideoTrack = f.createVideoTrack(VIDEO_TRACK_ID, videoSource)
         localVideoTrack!!.setEnabled(true)
 
-        replaceVideoTrackOnPeers(localVideoTrack!!)
+        // Re-attach local renderer if one was set
+        localRenderer?.let { localVideoTrack!!.addSink(it) }
 
-        // Re-register callback with arm delay so our own capture start is ignored
-        registerCameraAvailabilityCallback()
+        replaceVideoTrackOnPeers(localVideoTrack!!)
 
         oldTrack?.dispose()
         oldSource?.dispose()
@@ -687,6 +757,7 @@ class WebRtcServer(private val context: Context) {
     fun stop() {
         isRunning = false
         cameraPaused = false
+        stopRestartRetry()
         unregisterCameraAvailabilityCallback()
         currentCameraId = null
 
