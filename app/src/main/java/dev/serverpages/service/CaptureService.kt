@@ -40,6 +40,7 @@ class CaptureService : LifecycleService() {
     companion object {
         private const val TAG = "CaptureService"
         private const val CHANNEL_ID = "serverpages_channel"
+        private const val CHAT_CHANNEL_ID = "airdeck_chat"
         private const val NOTIFICATION_ID = 1
         private const val PORT = 3333
 
@@ -180,6 +181,7 @@ class CaptureService : LifecycleService() {
             onQualityChange = { label -> changeQuality(label) }
             onCameraSwitch = { switchCamera() }
             getWebRtcServer = { this@CaptureService.webRtcServer }
+            onViewerMessage = { code, label, text -> postChatNotification(code, label, text) }
             this.accessCodes = this@CaptureService.accessCodes
         }
 
@@ -478,6 +480,8 @@ class CaptureService : LifecycleService() {
     // ─── Notification ────────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
+        val nm = getSystemService(NotificationManager::class.java)
+
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(dev.serverpages.R.string.notification_channel_name),
@@ -486,8 +490,16 @@ class CaptureService : LifecycleService() {
             description = getString(dev.serverpages.R.string.notification_channel_description)
             setShowBadge(false)
         }
-        val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(channel)
+
+        val chatChannel = NotificationChannel(
+            CHAT_CHANNEL_ID,
+            "Chat Messages",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Notifications for viewer chat messages"
+        }
+        nm.createNotificationChannel(chatChannel)
     }
 
     private fun buildNotification(text: String): Notification {
@@ -510,6 +522,27 @@ class CaptureService : LifecycleService() {
     private fun updateNotification(text: String) {
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun postChatNotification(code: String, label: String, text: String) {
+        val tapIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, code.hashCode(), tapIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = Notification.Builder(this, CHAT_CHANNEL_ID)
+            .setContentTitle(label)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(code.hashCode() + 1000, notification)
     }
 
     // ─── WakeLock ────────────────────────────────────────────────────────────

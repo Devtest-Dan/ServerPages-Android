@@ -47,6 +47,7 @@ class WebServer(
     var getTailscaleUrl: (() -> String)? = null
     var getPublicUrl: (() -> String)? = null
     var getWebRtcServer: (() -> WebRtcServer?)? = null
+    var onViewerMessage: ((code: String, label: String, text: String) -> Unit)? = null
 
     // Multi-code auth
     var accessCodes: List<CodeInfo> = emptyList()
@@ -281,6 +282,8 @@ class WebServer(
         val msg = ChatMessage(from = "viewer", text = text)
         conversations.getOrPut(codeInfo.code) { mutableListOf() }.add(msg)
         Log.d(TAG, "Chat [${codeInfo.code}] viewer: $text")
+
+        onViewerMessage?.invoke(codeInfo.code, codeInfo.label, text)
 
         return jsonResponse(Response.Status.OK, mapOf("ok" to true, "time" to msg.time))
     }
