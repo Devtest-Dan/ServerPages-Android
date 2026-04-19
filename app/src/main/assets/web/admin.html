@@ -230,8 +230,8 @@
           pubEl.style.display = 'none';
         }
         const tsEl = document.getElementById('tailscaleInfo');
-        if (data.tailscaleUrl) {
-          tsEl.textContent = 'Tailscale: ' + data.tailscaleUrl;
+        if (data.vpnUrl) {
+          tsEl.textContent = 'VPN: ' + data.vpnUrl;
           tsEl.style.display = '';
         }
         if (data.camera) {
