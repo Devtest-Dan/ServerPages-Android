@@ -19,9 +19,10 @@ class InstallResultReceiver : BroadcastReceiver() {
         when (status) {
             PackageInstaller.STATUS_SUCCESS -> {
                 Log.i(TAG, "DanNet install succeeded")
-                DanNetInstaller(context).ensureProtected()
+                DanNetInstaller(context.applicationContext).ensureProtected()
             }
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                Log.w(TAG, "DanNet install requires user action — AirDeck may not be Device Owner")
                 val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirmIntent != null) {
                     confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

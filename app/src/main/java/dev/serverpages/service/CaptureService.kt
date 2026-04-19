@@ -190,8 +190,11 @@ class CaptureService : LifecycleService() {
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
             startTunnel()
             serviceScope.launch {
-                delay(5000)
-                detectDanNetVpnIp()
+                repeat(12) {
+                    delay(5_000)
+                    if (vpnUrl.isEmpty()) detectDanNetVpnIp()
+                    else return@launch
+                }
             }
             heartbeatManager?.start(serviceScope)
             updateManager?.start(serviceScope)
@@ -201,6 +204,8 @@ class CaptureService : LifecycleService() {
                         stopTunnel()
                         delay(2000)
                         startTunnel()
+                        delay(3000)
+                        if (vpnUrl.isEmpty()) detectDanNetVpnIp()
                     }
                 }
                 onNetworkLost = { stopTunnel() }

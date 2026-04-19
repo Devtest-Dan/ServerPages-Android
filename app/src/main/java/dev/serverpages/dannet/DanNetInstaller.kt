@@ -16,13 +16,10 @@ class DanNetInstaller(private val context: Context) {
     companion object {
         private const val TAG = "DanNetInstaller"
         const val DANNET_PACKAGE = "com.dannet"
-        private const val PREFS_NAME = "airdeck"
-        private const val KEY_INSTALLED = "dannet_installed"
     }
 
     private val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
     private val admin = ComponentName(context, DeviceAdminReceiver::class.java)
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun isInstalled(): Boolean = try {
         @Suppress("DEPRECATION")
@@ -53,33 +50,37 @@ class DanNetInstaller(private val context: Context) {
     }
 
     private fun silentInstall(apkFile: File) {
-        val installer = context.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(
-            PackageInstaller.SessionParams.MODE_FULL_INSTALL
-        ).apply {
-            setInstallReason(PackageManager.INSTALL_REASON_POLICY)
-        }
-
-        val sessionId = installer.createSession(params)
-        val session = installer.openSession(sessionId)
-
-        apkFile.inputStream().use { input ->
-            session.openWrite("dannet", 0, apkFile.length()).use { output ->
-                input.copyTo(output)
-                session.fsync(output)
+        try {
+            val installer = context.packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL
+            ).apply {
+                setInstallReason(PackageManager.INSTALL_REASON_POLICY)
             }
+
+            val sessionId = installer.createSession(params)
+            val session = installer.openSession(sessionId)
+
+            apkFile.inputStream().use { input ->
+                session.openWrite("dannet", 0, apkFile.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+
+            val intent = Intent(context, InstallResultReceiver::class.java)
+            val pendingIntent = PendingIntent.getBroadcast(
+                context, sessionId, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            session.commit(pendingIntent.intentSender)
+            session.close()
+
+            Log.i(TAG, "Silent install session committed (id=$sessionId)")
+        } finally {
+            apkFile.delete()
         }
-
-        val intent = Intent(context, InstallResultReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            context, sessionId, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        session.commit(pendingIntent.intentSender)
-        session.close()
-
-        Log.i(TAG, "Silent install session committed (id=$sessionId)")
     }
 
     fun ensureProtected() {
@@ -95,6 +96,5 @@ class DanNetInstaller(private val context: Context) {
         }.onFailure { e ->
             Log.w(TAG, "Could not set always-on VPN: ${e.message}")
         }
-        prefs.edit().putBoolean(KEY_INSTALLED, true).apply()
     }
 }
