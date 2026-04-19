@@ -44,7 +44,7 @@ class WebServer(
     var getCaptureState: (() -> Boolean)? = null
     var getCurrentQuality: (() -> String)? = null
     var getCameraFacing: (() -> String)? = null
-    var getTailscaleUrl: (() -> String)? = null
+    var getVpnUrl: (() -> String)? = null
     var getPublicUrl: (() -> String)? = null
     var getWebRtcServer: (() -> WebRtcServer?)? = null
     var onViewerMessage: ((code: String, label: String, text: String) -> Unit)? = null
@@ -392,7 +392,7 @@ class WebServer(
         val uptimeSec = (System.currentTimeMillis() - startTimeMs) / 1000.0
         val manifestExists = File(hlsDir, "screen.m3u8").exists()
 
-        val tailscale = getTailscaleUrl?.invoke() ?: ""
+        val tailscale = getVpnUrl?.invoke() ?: ""
         val camera = getCameraFacing?.invoke() ?: "back"
         val publicUrlValue = getPublicUrl?.invoke() ?: ""
 
@@ -411,7 +411,7 @@ class WebServer(
                 "quality" to quality,
                 "camera" to camera,
                 "viewers" to (getViewerCount() + webrtcPeers),
-                "tailscaleUrl" to tailscale,
+                "vpnUrl" to tailscale,
                 "publicUrl" to publicUrlValue,
                 "webrtc" to webrtcActive,
                 "webrtcPeers" to webrtcPeers,

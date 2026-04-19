@@ -33,7 +33,7 @@ import java.net.NetworkInterface
  * Foreground service — runs everything unattended:
  * 1. HTTP server (NanoHTTPd on port 3333) — starts immediately
  * 2. Screen capture (MediaProjection → MediaCodec → HLS) — starts when token provided
- * 3. Tailscale — auto-launches if installed
+ * 3. DanNet WireGuard VPN — detects tun0 interface with 10.10.0.x IP
  */
 class CaptureService : LifecycleService() {
 
@@ -51,8 +51,6 @@ class CaptureService : LifecycleService() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_QUALITY = "quality"
 
-        private const val TAILSCALE_PACKAGE = "com.tailscale.ipn"
-
         @Volatile
         var instance: CaptureService? = null
             private set
@@ -68,7 +66,7 @@ class CaptureService : LifecycleService() {
     private var mediaProjection: android.media.projection.MediaProjection? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
-    private var tailscaleHostname: String = ""
+    private var vpnUrl: String = ""
     private var publicUrl: String = ""
     private var accessCodes: List<CodeInfo> = emptyList()
     private var heartbeatManager: dev.serverpages.hub.HeartbeatManager? = null
@@ -103,7 +101,6 @@ class CaptureService : LifecycleService() {
                 acquireWakeLock()
                 acquireWifiLock()
                 startWebServer()
-                launchTailscale()
                 // Show notification that prompts user to tap for capture
                 val ip = getLocalIpAddress()
                 updateNotification("Server on http://$ip:$PORT — tap to enable capture")
@@ -121,7 +118,6 @@ class CaptureService : LifecycleService() {
                 acquireWifiLock()
                 startWebServer()
                 startCapture(resultCode, resultData)
-                launchTailscale()
             }
 
             ACTION_STOP -> {
@@ -179,7 +175,7 @@ class CaptureService : LifecycleService() {
             getCaptureState = { webRtcServer?.isRunning ?: (screenCapture?.isCapturing ?: false) }
             getCurrentQuality = { currentQuality.label }
             getCameraFacing = { this@CaptureService.getCameraLabel() }
-            getTailscaleUrl = { tailscaleHostname }
+            getVpnUrl = { vpnUrl }
             getPublicUrl = { publicUrl }
             onQualityChange = { label -> changeQuality(label) }
             onCameraSwitch = { switchCamera() }
@@ -193,6 +189,10 @@ class CaptureService : LifecycleService() {
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
             startTunnel()
+            serviceScope.launch {
+                delay(5000)
+                detectDanNetVpnIp()
+            }
             heartbeatManager?.start(serviceScope)
             updateManager?.start(serviceScope)
             networkMonitor = NetworkMonitor(this).apply {
@@ -291,7 +291,7 @@ class CaptureService : LifecycleService() {
         val base = "LIVE on http://$ip:$PORT | Code: $firstCode"
         val parts = mutableListOf(base)
         if (publicUrl.isNotEmpty()) parts.add("Public: $publicUrl")
-        if (tailscaleHostname.isNotEmpty()) parts.add("Tailscale: $tailscaleHostname")
+        if (vpnUrl.isNotEmpty()) parts.add("VPN: $vpnUrl")
         return parts.joinToString("\n")
     }
 
@@ -299,7 +299,7 @@ class CaptureService : LifecycleService() {
     fun isServerRunning(): Boolean = webServer != null
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
-    fun getTailscaleUrl(): String = tailscaleHostname
+    fun getVpnUrl(): String = vpnUrl
     fun getPublicUrl(): String = publicUrl
     fun getAccessCode(): String = accessCodes.firstOrNull()?.code ?: "----"
     fun getCodes(): List<CodeInfo> = accessCodes
@@ -418,66 +418,26 @@ class CaptureService : LifecycleService() {
         publicUrl = ""
     }
 
-    // ─── Tailscale ───────────────────────────────────────────────────────────
+    // ─── DanNet VPN ──────────────────────────────────────────────────────────
 
-    private fun launchTailscale() {
-        if (!isTailscaleInstalled()) {
-            Log.i(TAG, "Tailscale not installed — skipping")
-            return
-        }
-
-        // Launch Tailscale app to ensure VPN is connected
-        try {
-            val launchIntent = packageManager.getLaunchIntentForPackage(TAILSCALE_PACKAGE)
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(launchIntent)
-                Log.i(TAG, "Tailscale app launched")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to launch Tailscale", e)
-        }
-
-        // Try to detect Tailscale IP after a delay (VPN takes a moment)
-        serviceScope.launch {
-            delay(5000)
-            detectTailscaleIp()
-        }
-    }
-
-    private fun isTailscaleInstalled(): Boolean {
-        return try {
-            @Suppress("DEPRECATION")
-            packageManager.getPackageInfo(TAILSCALE_PACKAGE, 0)
-            true
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
-        }
-    }
-
-    private fun detectTailscaleIp() {
+    private fun detectDanNetVpnIp() {
         try {
             for (intf in NetworkInterface.getNetworkInterfaces()) {
-                // Tailscale creates a "tun" interface, usually named "tun0" or "tailscale0"
-                if (!intf.name.startsWith("tun") && !intf.name.contains("tailscale")) continue
+                if (!intf.name.startsWith("tun")) continue
                 for (addr in intf.inetAddresses) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        val tsIp = addr.hostAddress ?: continue
-                        // Tailscale IPs are in the 100.x.x.x range
-                        if (tsIp.startsWith("100.")) {
-                            tailscaleHostname = "http://$tsIp:$PORT"
-                            Log.i(TAG, "Tailscale detected: $tailscaleHostname")
-                            // Update notification with Tailscale URL
-                            if (isCapturing()) {
-                                updateNotification(buildLiveNotificationText())
-                            }
+                        val ip = addr.hostAddress ?: continue
+                        if (ip.startsWith("10.10.0.")) {
+                            vpnUrl = "http://$ip:$PORT"
+                            Log.i(TAG, "DanNet VPN detected: $vpnUrl")
+                            if (isCapturing()) updateNotification(buildLiveNotificationText())
                             return
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect Tailscale IP", e)
+            Log.w(TAG, "Failed to detect DanNet VPN IP", e)
         }
     }
 
@@ -595,12 +555,12 @@ class CaptureService : LifecycleService() {
     private fun getLocalIpAddress(): String {
         try {
             for (intf in NetworkInterface.getNetworkInterfaces()) {
-                // Skip Tailscale tun interface — we want the LAN IP
-                if (intf.name.startsWith("tun") || intf.name.contains("tailscale")) continue
+                // Skip VPN tun interfaces — we want the LAN IP
+                if (intf.name.startsWith("tun")) continue
                 for (addr in intf.inetAddresses) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         val ip = addr.hostAddress ?: continue
-                        if (!ip.startsWith("100.")) return ip // Skip Tailscale CGNAT range
+                        if (!ip.startsWith("10.10.0.")) return ip // Skip DanNet VPN range
                     }
                 }
             }
