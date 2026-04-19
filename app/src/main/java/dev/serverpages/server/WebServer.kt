@@ -392,7 +392,7 @@ class WebServer(
         val uptimeSec = (System.currentTimeMillis() - startTimeMs) / 1000.0
         val manifestExists = File(hlsDir, "screen.m3u8").exists()
 
-        val tailscale = getVpnUrl?.invoke() ?: ""
+        val vpn = getVpnUrl?.invoke() ?: ""
         val camera = getCameraFacing?.invoke() ?: "back"
         val publicUrlValue = getPublicUrl?.invoke() ?: ""
 
@@ -411,7 +411,7 @@ class WebServer(
                 "quality" to quality,
                 "camera" to camera,
                 "viewers" to (getViewerCount() + webrtcPeers),
-                "vpnUrl" to tailscale,
+                "vpnUrl" to vpn,
                 "publicUrl" to publicUrlValue,
                 "webrtc" to webrtcActive,
                 "webrtcPeers" to webrtcPeers,
