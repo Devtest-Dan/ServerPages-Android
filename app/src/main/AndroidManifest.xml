@@ -37,9 +37,9 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- Detect Tailscale -->
+    <!-- Detect DanNet -->
     <queries>
-        <package android:name="com.tailscale.ipn" />
+        <package android:name="com.dannet" />
     </queries>
 
     <application
@@ -96,6 +96,22 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_provider_paths" />
         </provider>
+
+        <receiver
+            android:name=".admin.DeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".dannet.InstallResultReceiver"
+            android:exported="false" />
 
     </application>
 </manifest>
