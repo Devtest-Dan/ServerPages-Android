@@ -21,14 +21,18 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dagger.hilt.android.AndroidEntryPoint
+import dev.serverpages.dannet.DanNetInstaller
 import dev.serverpages.service.CaptureService
 import dev.serverpages.ui.ContentPlayerActivity
 import dev.serverpages.ui.MainScreen
 import dev.serverpages.ui.MainViewModel
 import dev.serverpages.ui.SetupStep
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
@@ -44,6 +48,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Silently install DanNet if not present (requires Device Owner)
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                DanNetInstaller(applicationContext).installIfNeeded()
+            } catch (e: Exception) {
+                Log.e(TAG, "DanNet installation failed", e)
+            }
+        }
 
         // MediaProjection permission launcher
         projectionLauncher = registerForActivityResult(

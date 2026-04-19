@@ -397,13 +397,13 @@ private fun LiveScreen(state: ServiceState, onContentMode: () -> Unit, onToggleC
                 }
             }
 
-            if (state.tailscaleUrl.isNotEmpty()) {
+            if (state.vpnUrl.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF111111), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = "Tailscale", color = GreenColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(text = "VPN", color = GreenColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(2.dp))
-                        Text(text = state.tailscaleUrl, color = AccentColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(text = state.vpnUrl, color = AccentColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     }
                 }
             }
