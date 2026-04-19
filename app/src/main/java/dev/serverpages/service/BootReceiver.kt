@@ -12,7 +12,8 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        val intentAction = intent.action
+        if (intentAction != Intent.ACTION_BOOT_COMPLETED && intentAction != Intent.ACTION_LOCKED_BOOT_COMPLETED) return
 
         Log.i(TAG, "Boot completed — starting AirDeck")
 
