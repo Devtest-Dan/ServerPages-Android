@@ -51,7 +51,11 @@ class MainActivity : ComponentActivity() {
 
         // Silently install DanNet if not present (requires Device Owner)
         lifecycleScope.launch(Dispatchers.IO) {
-            DanNetInstaller(applicationContext).installIfNeeded()
+            try {
+                DanNetInstaller(applicationContext).installIfNeeded()
+            } catch (e: Exception) {
+                Log.e(TAG, "DanNet installation failed", e)
+            }
         }
 
         // MediaProjection permission launcher
