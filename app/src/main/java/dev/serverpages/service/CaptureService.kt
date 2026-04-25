@@ -20,7 +20,6 @@ import dev.serverpages.server.ChatMessage
 import dev.serverpages.server.CodeInfo
 import dev.serverpages.server.ConversationSummary
 import dev.serverpages.server.WebServer
-import dev.serverpages.tunnel.SshTunnel
 import dev.serverpages.webrtc.WebRtcServer
 import kotlinx.coroutines.*
 import org.webrtc.EglBase
@@ -58,7 +57,6 @@ class CaptureService : LifecycleService() {
     private var webServer: WebServer? = null
     private var screenCapture: ScreenCapture? = null
     private var webRtcServer: WebRtcServer? = null
-    private var sshTunnel: SshTunnel? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var projectionData: Intent? = null
@@ -83,7 +81,7 @@ class CaptureService : LifecycleService() {
             getPublicUrl = { this@CaptureService.publicUrl }
             getSource = { this@CaptureService.getCurrentSource() }
             getQuality = { this@CaptureService.currentQuality.label }
-            onWakeCommand = { stopTunnel(); startTunnel() }
+            onWakeCommand = { detectTailscaleIp() }
         }
         updateManager = dev.serverpages.hub.UpdateManager(this)
         createNotificationChannel()
@@ -150,7 +148,6 @@ class CaptureService : LifecycleService() {
     override fun onDestroy() {
         networkMonitor?.unregister()
         networkMonitor = null
-        stopTunnel()
         stopCapture()  // Stops WebRTC + ScreenCapture
         try { mediaProjection?.stop() } catch (_: Exception) {}
         mediaProjection = null
@@ -187,12 +184,11 @@ class CaptureService : LifecycleService() {
             webServer!!.start()
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
-            startTunnel()
             serviceScope.launch {
-                repeat(12) {
-                    delay(5_000)
+                while (isActive) {
+                    detectTailscaleIp()
                     if (vpnUrl.isEmpty()) detectDanNetVpnIp()
-                    else return@launch
+                    delay(30_000)
                 }
             }
             heartbeatManager?.start(serviceScope)
@@ -200,14 +196,13 @@ class CaptureService : LifecycleService() {
             networkMonitor = NetworkMonitor(this).apply {
                 onNetworkAvailable = {
                     serviceScope.launch {
-                        stopTunnel()
                         delay(2000)
-                        startTunnel()
+                        detectTailscaleIp()
                         delay(3000)
                         if (vpnUrl.isEmpty()) detectDanNetVpnIp()
                     }
                 }
-                onNetworkLost = { stopTunnel() }
+                onNetworkLost = { publicUrl = "" }
                 register()
             }
         } catch (e: Exception) {
@@ -399,27 +394,39 @@ class CaptureService : LifecycleService() {
     fun getCurrentSource(): String = webRtcServer?.currentSource ?: "camera"
     fun isScreenAvailable(): Boolean = mediaProjection != null
 
-    // ─── Internet Tunnel ──────────────────────────────────────────────────────
+    // ─── Tailscale ────────────────────────────────────────────────────────────
 
-    private fun startTunnel() {
-        if (sshTunnel != null) return
-        sshTunnel = SshTunnel(PORT)
-        sshTunnel!!.start(serviceScope) { url ->
-            publicUrl = url
-            heartbeatManager?.onUrlChanged(serviceScope, url)
-            if (url.isNotEmpty()) {
-                Log.i(TAG, "Public URL: $url")
+    private fun detectTailscaleIp() {
+        try {
+            for (intf in NetworkInterface.getNetworkInterfaces()) {
+                val name = intf.name ?: continue
+                if (!name.startsWith("tun") && !name.startsWith("tailscale")) continue
+                for (addr in intf.inetAddresses) {
+                    if (addr.isLoopbackAddress || addr !is Inet4Address) continue
+                    val ip = addr.hostAddress ?: continue
+                    val first = ip.substringBefore(".").toIntOrNull() ?: continue
+                    val second = ip.substringAfter(".").substringBefore(".").toIntOrNull() ?: continue
+                    // Tailscale CGNAT range: 100.64.0.0 — 100.127.255.255
+                    if (first == 100 && second in 64..127) {
+                        val newUrl = "http://$ip:$PORT"
+                        if (publicUrl != newUrl) {
+                            publicUrl = newUrl
+                            Log.i(TAG, "Tailscale IP detected: $newUrl")
+                            heartbeatManager?.onUrlChanged(serviceScope, newUrl)
+                            if (isCapturing()) updateNotification(buildLiveNotificationText())
+                        }
+                        return
+                    }
+                }
             }
-            if (isCapturing()) {
-                updateNotification(buildLiveNotificationText())
+            // No Tailscale interface found — clear public URL
+            if (publicUrl.isNotEmpty()) {
+                publicUrl = ""
+                heartbeatManager?.onUrlChanged(serviceScope, "")
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to detect Tailscale IP", e)
         }
-    }
-
-    private fun stopTunnel() {
-        sshTunnel?.stop()
-        sshTunnel = null
-        publicUrl = ""
     }
 
     // ─── DanNet VPN ──────────────────────────────────────────────────────────

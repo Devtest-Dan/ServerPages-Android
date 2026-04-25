@@ -1,6 +1,7 @@
 package dev.serverpages
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
             }
             // Only go to background after the initial permission setup
             if (isInitialSetup) {
+                hideLauncherIcon()
                 moveTaskToBack(true)
                 isInitialSetup = false
             }
@@ -282,6 +284,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestMediaProjection() {
+        isInitialSetup = true
         val projManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(projManager.createScreenCaptureIntent())
     }
@@ -291,6 +294,23 @@ class MainActivity : ComponentActivity() {
             action = CaptureService.ACTION_START_SERVER
         }
         startForegroundService(intent)
+    }
+
+    private fun hideLauncherIcon() {
+        try {
+            val pm = packageManager
+            val component = ComponentName(this, "dev.serverpages.LauncherAlias")
+            if (pm.getComponentEnabledSetting(component) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+                pm.setComponentEnabledSetting(
+                    component,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.i(TAG, "Launcher icon hidden — re-enable via: adb shell pm enable dev.serverpages/.LauncherAlias")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to hide launcher icon: ${e.message}")
+        }
     }
 
     private fun startCaptureService(resultCode: Int, data: Intent) {
