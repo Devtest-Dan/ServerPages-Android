@@ -20,6 +20,7 @@ import dev.serverpages.server.ChatMessage
 import dev.serverpages.server.CodeInfo
 import dev.serverpages.server.ConversationSummary
 import dev.serverpages.server.WebServer
+import dev.serverpages.tailscale.TailscaleNode
 import dev.serverpages.webrtc.WebRtcServer
 import kotlinx.coroutines.*
 import org.webrtc.EglBase
@@ -80,7 +81,7 @@ class CaptureService : LifecycleService() {
             getPublicUrl = { this@CaptureService.publicUrl }
             getSource = { this@CaptureService.getCurrentSource() }
             getQuality = { this@CaptureService.currentQuality.label }
-            onWakeCommand = { detectTailscaleIp() }
+            onWakeCommand = { /* tsnet keeps itself alive */ }
         }
         updateManager = dev.serverpages.hub.UpdateManager(this)
         createNotificationChannel()
@@ -182,22 +183,17 @@ class CaptureService : LifecycleService() {
             webServer!!.start()
             val ip = getLocalIpAddress()
             Log.i(TAG, "HTTP server started on http://$ip:$PORT")
-            serviceScope.launch {
-                while (isActive) {
-                    detectTailscaleIp()
-                    delay(30_000)
-                }
+            TailscaleNode.ensureStarted(this)
+            TailscaleNode.runLoginAndPoll(serviceScope) { tsIp ->
+                publicUrl = if (tsIp.isNotEmpty()) "http://$tsIp:$PORT" else ""
+                heartbeatManager?.onUrlChanged(serviceScope, publicUrl)
+                if (isCapturing()) updateNotification(buildLiveNotificationText())
             }
             heartbeatManager?.start(serviceScope)
             updateManager?.start(serviceScope)
             networkMonitor = NetworkMonitor(this).apply {
-                onNetworkAvailable = {
-                    serviceScope.launch {
-                        delay(2000)
-                        detectTailscaleIp()
-                    }
-                }
-                onNetworkLost = { publicUrl = "" }
+                onNetworkAvailable = { /* tsnet handles reconnect */ }
+                onNetworkLost = { /* keep last URL — tsnet may reconnect */ }
                 register()
             }
         } catch (e: Exception) {
@@ -387,41 +383,6 @@ class CaptureService : LifecycleService() {
     fun getCurrentSource(): String = webRtcServer?.currentSource ?: "camera"
     fun isScreenAvailable(): Boolean = mediaProjection != null
 
-    // ─── Tailscale ────────────────────────────────────────────────────────────
-
-    private fun detectTailscaleIp() {
-        try {
-            for (intf in NetworkInterface.getNetworkInterfaces()) {
-                val name = intf.name ?: continue
-                if (!name.startsWith("tun") && !name.startsWith("tailscale")) continue
-                for (addr in intf.inetAddresses) {
-                    if (addr.isLoopbackAddress || addr !is Inet4Address) continue
-                    val ip = addr.hostAddress ?: continue
-                    val first = ip.substringBefore(".").toIntOrNull() ?: continue
-                    val second = ip.substringAfter(".").substringBefore(".").toIntOrNull() ?: continue
-                    // Tailscale CGNAT range: 100.64.0.0 — 100.127.255.255
-                    if (first == 100 && second in 64..127) {
-                        val newUrl = "http://$ip:$PORT"
-                        if (publicUrl != newUrl) {
-                            publicUrl = newUrl
-                            Log.i(TAG, "Tailscale IP detected: $newUrl")
-                            heartbeatManager?.onUrlChanged(serviceScope, newUrl)
-                            if (isCapturing()) updateNotification(buildLiveNotificationText())
-                        }
-                        return
-                    }
-                }
-            }
-            // No Tailscale interface found — clear public URL
-            if (publicUrl.isNotEmpty()) {
-                publicUrl = ""
-                heartbeatManager?.onUrlChanged(serviceScope, "")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect Tailscale IP", e)
-        }
-    }
-
     // ─── Notification ────────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
@@ -515,7 +476,7 @@ class CaptureService : LifecycleService() {
                 for (addr in intf.inetAddresses) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         val ip = addr.hostAddress ?: continue
-                        if (!ip.startsWith("10.10.0.")) return ip // Skip DanNet VPN range
+                        return ip
                     }
                 }
             }

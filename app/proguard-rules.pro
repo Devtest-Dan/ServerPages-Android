@@ -26,3 +26,10 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+
+# gomobile-bound libtailscale — JNI lookups by class/method name
+-keep class go.** { *; }
+-keep class libtailscale.** { *; }
+-keep class dev.serverpages.tailscale.** { *; }
+-dontwarn go.**
+-dontwarn libtailscale.**

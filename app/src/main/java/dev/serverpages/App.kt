@@ -16,6 +16,10 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Bring up the embedded Tailscale daemon as early as possible so the
+        // tun device is ready by the time CaptureService asks for the VPN.
+        dev.serverpages.tailscale.TailscaleNode.ensureStarted(this)
+
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()

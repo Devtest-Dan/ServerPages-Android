@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -33,12 +34,14 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
     }
 
-    private enum class Step { NOTIFICATIONS, BATTERY, CAPTURE_PERMS, STORAGE, PROJECTION, DONE }
+    private enum class Step { NOTIFICATIONS, BATTERY, CAPTURE_PERMS, STORAGE, VPN_CONSENT, PROJECTION, DONE }
 
     private lateinit var projectionLauncher: ActivityResultLauncher<Intent>
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
     private lateinit var storageAccessLauncher: ActivityResultLauncher<Intent>
     private lateinit var batteryOptLauncher: ActivityResultLauncher<Intent>
+    private lateinit var vpnConsentLauncher: ActivityResultLauncher<Intent>
+    private var vpnStartedThisLaunch = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +74,19 @@ class MainActivity : ComponentActivity() {
         batteryOptLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { advance() }
+
+        vpnConsentLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == RESULT_OK) {
+                Log.i(TAG, "VPN consent granted — starting TailscaleVpnService")
+                startTailscaleVpn()
+            } else {
+                Log.w(TAG, "VPN consent denied — Tailscale will not be active")
+                vpnStartedThisLaunch = true   // skip retry this run
+            }
+            advance()
+        }
 
         advance()
     }
@@ -117,6 +133,15 @@ class MainActivity : ComponentActivity() {
                     storageAccessLauncher.launch(intent)
                 } else advance()
             }
+            Step.VPN_CONSENT -> {
+                val prepare = VpnService.prepare(this)
+                if (prepare != null) {
+                    vpnConsentLauncher.launch(prepare)
+                } else {
+                    startTailscaleVpn()
+                    advance()
+                }
+            }
             Step.PROJECTION -> {
                 val pm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 projectionLauncher.launch(pm.createScreenCaptureIntent())
@@ -140,7 +165,14 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
             return Step.STORAGE
         }
+        if (!vpnStartedThisLaunch) return Step.VPN_CONSENT
         return Step.PROJECTION
+    }
+
+    private fun startTailscaleVpn() {
+        vpnStartedThisLaunch = true
+        val svc = Intent(this, dev.serverpages.tailscale.TailscaleVpnService::class.java)
+        startForegroundService(svc)
     }
 
     private fun startCameraOnly() {

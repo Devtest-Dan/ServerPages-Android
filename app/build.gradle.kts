@@ -1,9 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+}
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -16,6 +23,17 @@ android {
         targetSdk = 33
         versionCode = 2
         versionName = "1.2.0"
+
+        buildConfigField(
+            "String",
+            "TAILSCALE_AUTH_KEY",
+            "\"${localProps.getProperty("tailscale.authKey", "")}\""
+        )
+        buildConfigField(
+            "String",
+            "TAILSCALE_HOSTNAME",
+            "\"${localProps.getProperty("tailscale.hostname", "airdeck-qq")}\""
+        )
     }
 
     signingConfigs {
@@ -47,6 +65,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -79,4 +98,10 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.webrtc)
     implementation(libs.work.runtime.ktx)
+
+    // EncryptedSharedPreferences for Tailscale state store
+    implementation("androidx.security:security-crypto:1.1.0-alpha07")
+
+    // Embedded Tailscale (gomobile-bound from tailscale-android@HEAD)
+    implementation(files("libs/libtailscale.aar"))
 }
