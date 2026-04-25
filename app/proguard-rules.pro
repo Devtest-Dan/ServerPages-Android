@@ -13,10 +13,6 @@
     @com.google.gson.annotations.SerializedName <fields>;
 }
 
-# JSch — SSH tunnel uses reflection
--keep class com.jcraft.jsch.** { *; }
--dontwarn com.jcraft.jsch.**
-
 # Hilt / Dagger generated classes
 -keep class dagger.hilt.** { *; }
 -keep class * extends dagger.hilt.internal.GeneratedComponent { *; }

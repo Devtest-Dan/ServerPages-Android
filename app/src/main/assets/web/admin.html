@@ -229,11 +229,6 @@
         } else {
           pubEl.style.display = 'none';
         }
-        const tsEl = document.getElementById('tailscaleInfo');
-        if (data.vpnUrl) {
-          tsEl.textContent = 'VPN: ' + data.vpnUrl;
-          tsEl.style.display = '';
-        }
         if (data.camera) {
           document.getElementById('cameraBtn').textContent = '\u{1F4F7} ' + (data.camera === 'front' ? 'Front' : 'Back');
         }

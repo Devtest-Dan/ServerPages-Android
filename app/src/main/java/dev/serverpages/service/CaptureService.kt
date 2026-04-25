@@ -63,7 +63,6 @@ class CaptureService : LifecycleService() {
     private var mediaProjection: android.media.projection.MediaProjection? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentQuality: QualityPreset = QualityPreset.P720
-    private var vpnUrl: String = ""
     private var publicUrl: String = ""
     private var accessCodes: List<CodeInfo> = emptyList()
     private var heartbeatManager: dev.serverpages.hub.HeartbeatManager? = null
@@ -171,7 +170,6 @@ class CaptureService : LifecycleService() {
             getCaptureState = { webRtcServer?.isRunning ?: (screenCapture?.isCapturing ?: false) }
             getCurrentQuality = { currentQuality.label }
             getCameraFacing = { this@CaptureService.getCameraLabel() }
-            getVpnUrl = { vpnUrl }
             getPublicUrl = { publicUrl }
             onQualityChange = { label -> changeQuality(label) }
             onCameraSwitch = { switchCamera() }
@@ -187,7 +185,6 @@ class CaptureService : LifecycleService() {
             serviceScope.launch {
                 while (isActive) {
                     detectTailscaleIp()
-                    if (vpnUrl.isEmpty()) detectDanNetVpnIp()
                     delay(30_000)
                 }
             }
@@ -198,8 +195,6 @@ class CaptureService : LifecycleService() {
                     serviceScope.launch {
                         delay(2000)
                         detectTailscaleIp()
-                        delay(3000)
-                        if (vpnUrl.isEmpty()) detectDanNetVpnIp()
                     }
                 }
                 onNetworkLost = { publicUrl = "" }
@@ -290,7 +285,6 @@ class CaptureService : LifecycleService() {
         val base = "LIVE on http://$ip:$PORT | Code: $firstCode"
         val parts = mutableListOf(base)
         if (publicUrl.isNotEmpty()) parts.add("Public: $publicUrl")
-        if (vpnUrl.isNotEmpty()) parts.add("VPN: $vpnUrl")
         return parts.joinToString("\n")
     }
 
@@ -298,7 +292,6 @@ class CaptureService : LifecycleService() {
     fun isServerRunning(): Boolean = webServer != null
     fun getQualityLabel(): String = currentQuality.label
     fun getServerUrl(): String = "http://${getLocalIpAddress()}:$PORT"
-    fun getVpnUrl(): String = vpnUrl
     fun getPublicUrl(): String = publicUrl
     fun getAccessCode(): String = accessCodes.firstOrNull()?.code ?: "----"
     fun getCodes(): List<CodeInfo> = accessCodes
@@ -426,29 +419,6 @@ class CaptureService : LifecycleService() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to detect Tailscale IP", e)
-        }
-    }
-
-    // ─── DanNet VPN ──────────────────────────────────────────────────────────
-
-    private fun detectDanNetVpnIp() {
-        try {
-            for (intf in NetworkInterface.getNetworkInterfaces()) {
-                if (!intf.name.startsWith("tun")) continue
-                for (addr in intf.inetAddresses) {
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        val ip = addr.hostAddress ?: continue
-                        if (ip.startsWith("10.10.0.")) {
-                            vpnUrl = "http://$ip:$PORT"
-                            Log.i(TAG, "DanNet VPN detected: $vpnUrl")
-                            if (isCapturing()) updateNotification(buildLiveNotificationText())
-                            return
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect DanNet VPN IP", e)
         }
     }
 
