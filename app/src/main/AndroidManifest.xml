@@ -53,11 +53,17 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.ServerPages" />
 
+        <!-- Disabled by default. AirDeck runs as a background service only;
+             there is no app drawer entry. To open MainActivity for one-time
+             permission setup or troubleshooting, use:
+                 adb shell am start -n dev.serverpages/.MainActivity
+             To temporarily restore the launcher icon:
+                 adb shell pm enable dev.serverpages/.LauncherAlias  -->
         <activity-alias
             android:name=".LauncherAlias"
             android:targetActivity=".MainActivity"
             android:exported="true"
-            android:enabled="true"
+            android:enabled="false"
             android:icon="@mipmap/ic_launcher"
             android:label="AirDeck">
             <intent-filter>
