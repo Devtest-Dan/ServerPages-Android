@@ -1,13 +1,7 @@
 package dev.serverpages.hub
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.util.Log
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,8 +21,6 @@ class UpdateManager(private val context: Context) {
         private const val INITIAL_DELAY_MS = 60_000L // 60s after start
         private const val GITHUB_API_URL =
             "https://api.github.com/repos/Devtest-Dan/ServerPages-Android/releases/latest"
-        private const val CHANNEL_ID = "airdeck_updates"
-        private const val NOTIFICATION_ID = 9999
         private const val PREFS_NAME = "airdeck_updates"
         private const val KEY_LAST_TAG = "last_downloaded_tag"
     }
@@ -127,8 +119,7 @@ class UpdateManager(private val context: Context) {
             // Save tag to avoid re-downloading
             prefs.edit().putString(KEY_LAST_TAG, tagName).apply()
 
-            // Post notification
-            postUpdateNotification(apkFile, remoteVersion)
+            Log.i(TAG, "Update v$remoteVersion downloaded silently to ${apkFile.absolutePath}")
 
         } catch (e: Exception) {
             Log.w(TAG, "Update check failed: ${e.message}")
@@ -147,44 +138,4 @@ class UpdateManager(private val context: Context) {
         return false
     }
 
-    private fun postUpdateNotification(apkFile: File, version: String) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "App Updates",
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "Notifications for AirDeck OTA updates"
-        }
-        nm.createNotificationChannel(channel)
-
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile
-        )
-
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-
-        val pendingIntent = PendingIntent.getActivity(
-            context, 0, installIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val notification = Notification.Builder(context, CHANNEL_ID)
-            .setContentTitle("AirDeck Update Available")
-            .setContentText("Tap to install v$version")
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-
-        nm.notify(NOTIFICATION_ID, notification)
-        Log.i(TAG, "Update notification posted for v$version")
-    }
 }
