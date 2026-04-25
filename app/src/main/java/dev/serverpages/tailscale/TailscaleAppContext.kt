@@ -40,15 +40,15 @@ class TailscaleAppContext(private val context: Context) : libtailscale.AppContex
         )
     }
 
-    override fun log(tag: String, line: String) {
-        Log.d(tag, line)
+    override fun log(tag: String?, line: String?) {
+        Log.d(tag ?: "", line ?: "")
     }
 
-    override fun encryptToPref(prefKey: String, plaintext: String) {
+    override fun encryptToPref(prefKey: String?, plaintext: String?) {
         encryptedPrefs.edit().putString(prefKey, plaintext).commit()
     }
 
-    override fun decryptFromPref(prefKey: String): String? =
+    override fun decryptFromPref(prefKey: String?): String? =
         encryptedPrefs.getString(prefKey, null)
 
     override fun getStateStoreKeysJSON(): String {
@@ -133,29 +133,29 @@ class TailscaleAppContext(private val context: Context) : libtailscale.AppContex
 
     override fun getPlatformDNSConfig(): String = ""
 
-    override fun getSyspolicyStringValue(key: String): String =
+    override fun getSyspolicyStringValue(key: String?): String =
         throw UnsupportedOperationException("no syspolicy")
 
-    override fun getSyspolicyBooleanValue(key: String): Boolean =
+    override fun getSyspolicyBooleanValue(key: String?): Boolean =
         throw UnsupportedOperationException("no syspolicy")
 
-    override fun getSyspolicyStringArrayJSONValue(key: String): String =
+    override fun getSyspolicyStringArrayJSONValue(key: String?): String =
         throw UnsupportedOperationException("no syspolicy")
 
     override fun hardwareAttestationKeySupported(): Boolean = false
     override fun hardwareAttestationKeyCreate(): String =
         throw UnsupportedOperationException()
 
-    override fun hardwareAttestationKeyRelease(id: String) =
+    override fun hardwareAttestationKeyRelease(id: String?) =
         throw UnsupportedOperationException()
 
-    override fun hardwareAttestationKeyPublic(id: String): ByteArray =
+    override fun hardwareAttestationKeyPublic(id: String?): ByteArray =
         throw UnsupportedOperationException()
 
-    override fun hardwareAttestationKeySign(id: String, data: ByteArray): ByteArray =
+    override fun hardwareAttestationKeySign(id: String?, data: ByteArray?): ByteArray =
         throw UnsupportedOperationException()
 
-    override fun hardwareAttestationKeyLoad(id: String) =
+    override fun hardwareAttestationKeyLoad(id: String?) =
         throw UnsupportedOperationException()
 
     override fun bindSocketToNetwork(fd: Int): Boolean {

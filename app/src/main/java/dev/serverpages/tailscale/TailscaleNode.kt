@@ -80,11 +80,15 @@ object TailscaleNode {
                 return@launch
             }
 
-            // DEBUG: skip auth-key login + hostname pref + status polling to
-            // isolate gomobile "Unknown reference" panic. We only confirm
-            // libtailscale stays alive without any callLocalAPI calls.
-            Log.i(TAG, "Auth-key login + status poll skipped (debug)")
-            return@launch
+            // Set hostname pref before login so registration uses it.
+            setHostnamePref(a, BuildConfig.TAILSCALE_HOSTNAME)
+
+            // Send auth key once.
+            if (!loginAttempted) {
+                loginAttempted = true
+                val ok = startWithAuthKey(a, BuildConfig.TAILSCALE_AUTH_KEY)
+                Log.i(TAG, "Auth-key start request → $ok")
+            }
 
             // Poll status until we see a 100.x.x.x address.
             while (isActive) {
