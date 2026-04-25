@@ -53,6 +53,7 @@ class WebRtcServer(private val context: Context) {
     private var localVideoTrack: VideoTrack? = null
     private var localAudioTrack: AudioTrack? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    private var recorder: dev.serverpages.recording.StreamRecorder? = null
 
     // Screen capture via ImageReader (reliable frame delivery)
     private var screenProjection: MediaProjection? = null
@@ -209,6 +210,13 @@ class WebRtcServer(private val context: Context) {
 
         localVideoTrack = f.createVideoTrack(VIDEO_TRACK_ID, videoSource)
         localVideoTrack!!.setEnabled(true)
+
+        // Tee frames into a disk recorder. CameraBackup will pick up segments
+        // from Movies/AirDeck/ as they're finalized (rolls over every 30 min).
+        recorder = dev.serverpages.recording.StreamRecorder(context).also { rec ->
+            rec.start(width, height, fps)
+            localVideoTrack!!.addSink(rec)
+        }
 
         // Audio source
         val audioConstraints = MediaConstraints().apply {
@@ -763,6 +771,14 @@ class WebRtcServer(private val context: Context) {
 
         // Close all peers
         peers.keys.toList().forEach { removePeer(it) }
+
+        // Detach the recorder before tearing down the video track so we
+        // finalize the in-flight mp4 cleanly.
+        recorder?.let { rec ->
+            try { localVideoTrack?.removeSink(rec) } catch (_: Throwable) {}
+            try { rec.stop() } catch (e: Exception) { Log.w(TAG, "recorder.stop", e) }
+        }
+        recorder = null
 
         // Stop camera/screen capturer
         try {
