@@ -1,11 +1,13 @@
 package dev.serverpages.recording
 
 import android.content.Context
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.media.MediaScannerConnection
+import android.media.MediaRecorder
 import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
@@ -16,27 +18,37 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Tee from WebRTC's [org.webrtc.VideoTrack] into mp4 files on disk.
+ * Tee from WebRTC's [org.webrtc.VideoTrack] into hidden mp4 segments on disk
+ * and capture mic audio in parallel via [AudioRecord], multiplexing both into
+ * the same MediaMuxer.
  *
- * Encodes H.264 via [MediaCodec] (Image-based YUV input) and muxes via
- * [MediaMuxer]. Rolls over to a new file every [SEGMENT_MS] of presentation
- * time so CameraBackup can pick up segments while recording continues.
+ * Output: /storage/emulated/0/Movies/.airdeck/recording_<ts>.mp4
  *
- * Output: /storage/emulated/0/Movies/AirDeck/recording_YYYYMMDD_HHMMSS.mp4
+ * The folder is prefixed `.` and contains a `.nomedia` marker so galleries
+ * won't index it. CameraBackup picks recordings up via direct FileObserver,
+ * not MediaStore, then deletes them after successful upload.
  *
- * Files are registered with MediaStore on close so CameraBackup's observer
- * sees them.
+ * Each segment caps at [SEGMENT_MS] of presentation time and rolls over to
+ * the next file without blocking the WebRTC frame thread.
  */
 class StreamRecorder(private val context: Context) : VideoSink {
 
     companion object {
         private const val TAG = "StreamRecorder"
         private const val MIME_VIDEO = MediaFormat.MIMETYPE_VIDEO_AVC
+        private const val MIME_AUDIO = MediaFormat.MIMETYPE_AUDIO_AAC
         private const val SEGMENT_MS = 30L * 60L * 1000L           // 30 minutes
-        private const val FOLDER_NAME = "AirDeck"
+        private const val FOLDER_NAME = ".airdeck"
         private const val DEQUEUE_TIMEOUT_US = 10_000L
+
+        // Audio config: 44.1 kHz mono 16-bit PCM → AAC LC @ 64 kbps. Wide
+        // device support; small file footprint.
+        private const val AUDIO_SAMPLE_RATE = 44_100
+        private const val AUDIO_CHANNELS = 1
+        private const val AUDIO_BIT_RATE = 64_000
     }
 
     private val drainThread = HandlerThread("StreamRecorderDrain").apply { start() }
@@ -47,57 +59,61 @@ class StreamRecorder(private val context: Context) : VideoSink {
     @Volatile private var height = 0
     @Volatile private var fps = 30
 
-    private var encoder: MediaCodec? = null
+    // Video pipeline.
+    private var videoEncoder: MediaCodec? = null
+    private var videoTrackIndex = -1
+    private val videoFormatReady = AtomicBoolean(false)
+
+    // Audio pipeline.
+    private var audioEncoder: MediaCodec? = null
+    private var audioTrackIndex = -1
+    private val audioFormatReady = AtomicBoolean(false)
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
+    @Volatile private var audioRunning = false
+
+    // Muxer.
     private var muxer: MediaMuxer? = null
-    private var trackIndex = -1
-    private var muxerStarted = false
-    private var firstFramePresentationUs = -1L
-    private var segmentStartFramePresentationUs = -1L
+    @Volatile private var muxerStarted = false
+
+    // PTS tracking.
+    private var firstFrameNs = -1L
+    private var segmentStartNs = -1L
+    private var audioSampleCount = 0L
     private var currentFile: File? = null
 
     private val outputRoot: File by lazy {
         File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
             FOLDER_NAME
-        ).also { it.mkdirs() }
+        ).also { dir ->
+            dir.mkdirs()
+            // Hide from gallery / photo apps.
+            val nomedia = File(dir, ".nomedia")
+            if (!nomedia.exists()) runCatching { nomedia.createNewFile() }
+        }
     }
 
-    /** Begin recording. Must be called from any thread; idempotent. */
     @Synchronized
     fun start(width: Int, height: Int, fps: Int) {
         if (running) return
         this.width = width
         this.height = height
         this.fps = fps
-        firstFramePresentationUs = -1L
-        segmentStartFramePresentationUs = -1L
-
-        // Orphan recovery: if we were force-killed last run, the previous
-        // segment never got registered with MediaStore. Sweep the folder now
-        // so CameraBackup can pick up anything we left behind.
-        sweepOrphanedSegments()
+        firstFrameNs = -1L
+        segmentStartNs = -1L
+        audioSampleCount = 0L
 
         try {
             openSegment()
             running = true
-            Log.i(TAG, "Recording started ${width}x${height}@${fps}fps → ${currentFile?.absolutePath}")
+            Log.i(TAG, "Recording started ${width}x${height}@${fps}fps + audio → ${currentFile?.absolutePath}")
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to start recorder", e)
             closeQuietly()
         }
     }
 
-    private fun sweepOrphanedSegments() {
-        try {
-            outputRoot.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }?.forEach { f ->
-                registerWithMediaStore(f)
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "sweepOrphanedSegments threw: ${e.message}")
-        }
-    }
-
-    /** Stop recording. Flushes the current segment and finalizes the file. */
     @Synchronized
     fun stop() {
         if (!running) return
@@ -112,22 +128,21 @@ class StreamRecorder(private val context: Context) : VideoSink {
     }
 
     override fun onFrame(frame: VideoFrame) {
-        // Critical: swallow ALL exceptions. WebRTC's native side aborts
-        // the camera thread if a Java VideoSink throws.
+        // Critical: WebRTC's native camera thread aborts if a sink throws.
         try {
             if (!running) return
-            val enc = encoder ?: return
+            val enc = videoEncoder ?: return
 
-            val nowUs = System.nanoTime() / 1000L
-            if (firstFramePresentationUs < 0) {
-                firstFramePresentationUs = nowUs
-                segmentStartFramePresentationUs = nowUs
+            val nowNs = System.nanoTime()
+            if (firstFrameNs < 0) {
+                firstFrameNs = nowNs
+                segmentStartNs = nowNs
             }
-            val ptsUs = nowUs - firstFramePresentationUs
+            val ptsUs = (nowNs - firstFrameNs) / 1000L
 
-            if (nowUs - segmentStartFramePresentationUs >= SEGMENT_MS * 1000L) {
+            if (nowNs - segmentStartNs >= SEGMENT_MS * 1_000_000L) {
                 rolloverSegment()
-                segmentStartFramePresentationUs = nowUs
+                segmentStartNs = nowNs
             }
 
             val i420 = frame.buffer.toI420() ?: return
@@ -139,11 +154,10 @@ class StreamRecorder(private val context: Context) : VideoSink {
                         val bytes = copyI420ToImage(i420, image)
                         enc.queueInputBuffer(idx, 0, bytes, ptsUs, 0)
                     } else {
-                        // Couldn't get an Image — release the buffer back without queueing.
                         enc.queueInputBuffer(idx, 0, 0, ptsUs, 0)
                     }
                 }
-                drainHandler.post { drainEncoder(false) }
+                drainHandler.post { drainEncoders(false) }
             } finally {
                 i420.release()
             }
@@ -159,112 +173,250 @@ class StreamRecorder(private val context: Context) : VideoSink {
         val file = File(outputRoot, "recording_$ts.mp4")
         currentFile = file
 
-        val format = MediaFormat.createVideoFormat(MIME_VIDEO, width, height).apply {
+        val videoFormat = MediaFormat.createVideoFormat(MIME_VIDEO, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-            setInteger(MediaFormat.KEY_BIT_RATE, estimateBitrate(width, height))
+            setInteger(MediaFormat.KEY_BIT_RATE, estimateVideoBitrate(width, height))
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
         }
-        val enc = MediaCodec.createEncoderByType(MIME_VIDEO)
-        enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        enc.start()
-        encoder = enc
+        val vEnc = MediaCodec.createEncoderByType(MIME_VIDEO)
+        vEnc.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        vEnc.start()
+        videoEncoder = vEnc
+
+        val audioFormat = MediaFormat.createAudioFormat(MIME_AUDIO, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+        }
+        val aEnc = MediaCodec.createEncoderByType(MIME_AUDIO)
+        aEnc.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        aEnc.start()
+        audioEncoder = aEnc
 
         muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        trackIndex = -1
+        videoTrackIndex = -1
+        audioTrackIndex = -1
+        videoFormatReady.set(false)
+        audioFormatReady.set(false)
         muxerStarted = false
+
+        // CRITICAL: start AudioRecord BEFORE any video frame can arrive and
+        // race ahead with maybeStartMuxer. This guarantees audioRecord is
+        // non-null by the time the muxer-readiness check runs.
+        startAudioCapture()
     }
 
     private fun closeSegment() {
-        val enc = encoder ?: return
+        // Stop audio capture first so its drain finishes naturally.
+        stopAudioCapture()
+
+        // Signal EOS on video encoder.
         try {
-            // Signal end of stream.
-            val idx = enc.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
-            if (idx >= 0) {
-                enc.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            val enc = videoEncoder
+            if (enc != null) {
+                val idx = enc.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                if (idx >= 0) enc.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             }
-            // Drain remaining buffers until EOS.
-            drainEncoder(endOfStream = true)
+        } catch (_: Throwable) {}
+
+        // Drain everything.
+        try {
+            drainEncoders(endOfStream = true)
         } catch (e: Throwable) {
-            Log.w(TAG, "Drain at close threw: ${e.message}")
-        } finally {
-            closeQuietly()
-            registerWithMediaStore(currentFile)
+            Log.w(TAG, "Final drain threw: ${e.message}")
         }
+        closeQuietly()
     }
 
     private fun rolloverSegment() {
         Log.i(TAG, "Rolling over segment: ${currentFile?.name}")
         closeSegment()
-        firstFramePresentationUs = -1L  // reset PTS for new segment
+        firstFrameNs = -1L
+        audioSampleCount = 0L
         openSegment()
     }
 
     private fun closeQuietly() {
-        try { encoder?.stop() } catch (_: Throwable) {}
-        try { encoder?.release() } catch (_: Throwable) {}
-        encoder = null
+        try { videoEncoder?.stop() } catch (_: Throwable) {}
+        try { videoEncoder?.release() } catch (_: Throwable) {}
+        videoEncoder = null
+        try { audioEncoder?.stop() } catch (_: Throwable) {}
+        try { audioEncoder?.release() } catch (_: Throwable) {}
+        audioEncoder = null
         try { if (muxerStarted) muxer?.stop() } catch (_: Throwable) {}
         try { muxer?.release() } catch (_: Throwable) {}
         muxer = null
         muxerStarted = false
-        trackIndex = -1
+        videoTrackIndex = -1
+        audioTrackIndex = -1
+        videoFormatReady.set(false)
+        audioFormatReady.set(false)
+    }
+
+    // ─── Audio capture ───────────────────────────────────────────────────────
+
+    private fun startAudioCapture() {
+        try {
+            val channelConfig = if (AUDIO_CHANNELS == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
+            val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+            val bufSize = minBuf.coerceAtLeast(8192)
+            val rec = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                AUDIO_SAMPLE_RATE,
+                channelConfig,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufSize * 4,
+            )
+            if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                Log.w(TAG, "AudioRecord init failed (state=${rec.state}) — recording video-only")
+                rec.release()
+                return
+            }
+            rec.startRecording()
+            audioRecord = rec
+            audioRunning = true
+
+            audioThread = Thread({ audioCaptureLoop(bufSize) }, "StreamRecorderAudio").apply { start() }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Audio capture failed (mic in use?) — video-only: ${e.message}")
+            audioRunning = false
+        }
+    }
+
+    private fun stopAudioCapture() {
+        audioRunning = false
+        try {
+            // Signal EOS on audio encoder if still alive.
+            val aEnc = audioEncoder
+            if (aEnc != null) {
+                val idx = aEnc.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                if (idx >= 0) aEnc.queueInputBuffer(idx, 0, 0, audioPtsUs(0), MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            }
+        } catch (_: Throwable) {}
+        try { audioThread?.join(500) } catch (_: Throwable) {}
+        audioThread = null
+        try { audioRecord?.stop() } catch (_: Throwable) {}
+        try { audioRecord?.release() } catch (_: Throwable) {}
+        audioRecord = null
+    }
+
+    private fun audioCaptureLoop(bufSize: Int) {
+        val buf = ByteArray(bufSize)
+        while (audioRunning) {
+            val rec = audioRecord ?: break
+            val enc = audioEncoder ?: break
+            val n = try { rec.read(buf, 0, buf.size) } catch (_: Throwable) { -1 }
+            if (n <= 0) continue
+            try {
+                val idx = enc.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                if (idx >= 0) {
+                    val inBuf = enc.getInputBuffer(idx) ?: continue
+                    inBuf.clear()
+                    inBuf.put(buf, 0, n)
+                    val samples = n / 2 / AUDIO_CHANNELS  // 16-bit
+                    val ptsUs = audioPtsUs(samples)
+                    enc.queueInputBuffer(idx, 0, n, ptsUs, 0)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "audioCaptureLoop iteration threw: ${e.message}")
+            }
+        }
+    }
+
+    @Synchronized
+    private fun audioPtsUs(samplesAdded: Int): Long {
+        val pts = audioSampleCount * 1_000_000L / AUDIO_SAMPLE_RATE
+        audioSampleCount += samplesAdded
+        return pts
     }
 
     // ─── Encoder drain ───────────────────────────────────────────────────────
 
-    private val bufferInfo = MediaCodec.BufferInfo()
+    private val videoBufferInfo = MediaCodec.BufferInfo()
+    private val audioBufferInfo = MediaCodec.BufferInfo()
 
-    /** Pulls encoded chunks out of [encoder] and feeds them into [muxer]. */
-    private fun drainEncoder(endOfStream: Boolean) {
-        val enc = encoder ?: return
+    /** Pull encoded chunks from both encoders and feed them into [muxer]. */
+    private fun drainEncoders(endOfStream: Boolean) {
+        drainOne(videoEncoder, videoBufferInfo, isVideo = true, endOfStream = endOfStream)
+        drainOne(audioEncoder, audioBufferInfo, isVideo = false, endOfStream = endOfStream)
+        maybeStartMuxer()
+    }
+
+    private fun drainOne(
+        enc: MediaCodec?,
+        info: MediaCodec.BufferInfo,
+        isVideo: Boolean,
+        endOfStream: Boolean,
+    ) {
+        enc ?: return
         val mux = muxer ?: return
         while (true) {
             val outIdx = try {
-                enc.dequeueOutputBuffer(bufferInfo, if (endOfStream) DEQUEUE_TIMEOUT_US else 0)
+                enc.dequeueOutputBuffer(info, if (endOfStream) DEQUEUE_TIMEOUT_US else 0)
             } catch (e: Throwable) {
-                Log.w(TAG, "dequeueOutputBuffer threw: ${e.message}")
+                Log.w(TAG, "${if (isVideo) "video" else "audio"} dequeueOutputBuffer threw: ${e.message}")
                 return
             }
             when {
                 outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                     if (!endOfStream) return
-                    // else keep spinning until EOS
                 }
                 outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    if (muxerStarted) {
-                        Log.w(TAG, "Format changed twice; ignoring")
+                    if (isVideo) {
+                        if (videoTrackIndex < 0) {
+                            videoTrackIndex = mux.addTrack(enc.outputFormat)
+                            videoFormatReady.set(true)
+                        }
                     } else {
-                        trackIndex = mux.addTrack(enc.outputFormat)
-                        mux.start()
-                        muxerStarted = true
+                        if (audioTrackIndex < 0) {
+                            audioTrackIndex = mux.addTrack(enc.outputFormat)
+                            audioFormatReady.set(true)
+                        }
                     }
+                    maybeStartMuxer()
                 }
                 outIdx >= 0 -> {
                     val outBuf = enc.getOutputBuffer(outIdx)
-                    if (outBuf != null && bufferInfo.size > 0 && muxerStarted) {
-                        outBuf.position(bufferInfo.offset)
-                        outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                        try {
-                            mux.writeSampleData(trackIndex, outBuf, bufferInfo)
-                        } catch (e: Throwable) {
-                            Log.w(TAG, "writeSampleData threw: ${e.message}")
+                    val isCodecConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                    if (outBuf != null && info.size > 0 && muxerStarted && !isCodecConfig) {
+                        outBuf.position(info.offset)
+                        outBuf.limit(info.offset + info.size)
+                        val track = if (isVideo) videoTrackIndex else audioTrackIndex
+                        if (track >= 0) {
+                            try {
+                                mux.writeSampleData(track, outBuf, info)
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "writeSampleData(${if (isVideo) "video" else "audio"}) threw: ${e.message}")
+                            }
                         }
                     }
                     enc.releaseOutputBuffer(outIdx, false)
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
+                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
                 }
             }
         }
     }
 
+    @Synchronized
+    private fun maybeStartMuxer() {
+        if (muxerStarted) return
+        if (!videoFormatReady.get()) return
+        // Audio is best-effort — start muxer with video-only if audio failed
+        // to initialize at all (no audio encoder, no AudioRecord).
+        val audioRequired = audioRecord != null
+        if (audioRequired && !audioFormatReady.get()) return
+        try {
+            muxer?.start()
+            muxerStarted = true
+            Log.i(TAG, "Muxer started (video=$videoTrackIndex audio=$audioTrackIndex)")
+        } catch (e: Throwable) {
+            Log.e(TAG, "muxer.start failed", e)
+        }
+    }
+
     // ─── YUV plumbing ────────────────────────────────────────────────────────
 
-    /**
-     * Copy a WebRTC [VideoFrame.I420Buffer] into a MediaCodec input
-     * [android.media.Image]. Returns the total bytes written so the caller
-     * can pass the right size to [MediaCodec.queueInputBuffer].
-     */
     private fun copyI420ToImage(src: VideoFrame.I420Buffer, dst: android.media.Image): Int {
         val planes = dst.planes
         val cropW = minOf(src.width, dst.width)
@@ -288,24 +440,17 @@ class StreamRecorder(private val context: Context) : VideoSink {
         val src = srcBuf.duplicate().apply { rewind() }
         val rowBuf = ByteArray(srcStride)
         var bytesWritten = 0
-
         for (row in 0 until h) {
             src.position(row * srcStride)
-            // Defensive: srcStride might be smaller than w on tightly packed
-            // buffers; clamp the read to what's available.
             val readLen = minOf(srcStride, src.remaining())
             src.get(rowBuf, 0, readLen)
-
             val dstRowStart = row * dstRowStride
             if (dstPixelStride == 1) {
-                // Planar: bulk write w bytes (rowStride may be > w; rest is padding).
                 dstBuf.position(dstRowStart)
                 val safeW = minOf(w, dstBuf.remaining())
                 dstBuf.put(rowBuf, 0, safeW)
                 bytesWritten += safeW
             } else {
-                // Semi-planar: write each sample at pixelStride apart. We
-                // never write past w * pixelStride within a row.
                 for (col in 0 until w) {
                     val pos = dstRowStart + col * dstPixelStride
                     if (pos >= dstBuf.limit()) break
@@ -318,35 +463,6 @@ class StreamRecorder(private val context: Context) : VideoSink {
         return bytesWritten
     }
 
-    // ─── MediaStore registration ─────────────────────────────────────────────
-
-    private fun registerWithMediaStore(file: File?) {
-        val f = file ?: return
-        // Skip empty / aborted segments — they'd just show up in MediaStore
-        // as ~3KB placeholders and trigger CameraBackup uploads of garbage.
-        // 50KB is "more than just an mp4 header"; smaller means encoder
-        // never produced video.
-        if (!f.exists() || f.length() < 50_000) {
-            if (f.exists()) runCatching { f.delete() }
-            return
-        }
-        try {
-            // MediaScannerConnection scans the existing file and inserts/updates
-            // its MediaStore row. This fires the observer CameraBackup listens
-            // on. Doing this AND a manual MediaStore.insert() would duplicate
-            // the row (with a "(1)" suffix), so we use only the scanner.
-            MediaScannerConnection.scanFile(
-                context.applicationContext,
-                arrayOf(f.absolutePath),
-                arrayOf("video/mp4"),
-                null
-            )
-        } catch (e: Throwable) {
-            Log.w(TAG, "MediaStore register failed: ${e.message}")
-        }
-    }
-
-    private fun estimateBitrate(w: Int, h: Int): Int =
-        // ~0.1 bits per pixel per frame at 30fps gives a reasonable mp4 size.
+    private fun estimateVideoBitrate(w: Int, h: Int): Int =
         (w * h * fps * 0.10).toInt().coerceAtLeast(800_000)
 }
